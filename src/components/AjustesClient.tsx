@@ -23,9 +23,11 @@ export default function AjustesClient() {
 
     const { data: userData, error: userErr } = await supabase.auth.getUser();
     const user = userData?.user;
+    console.log("USER", user);
+    alert("USER ID: " + (user?.id ?? "null"));
     if (userErr || !user) {
       setLoading(false);
-      alert("No hay sesión. Vuelve a iniciar sesión.");
+      alert("INSERT ERROR: " + JSON.stringify(createErr, null, 2));
       return;
     }
 
