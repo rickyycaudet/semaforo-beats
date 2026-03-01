@@ -27,7 +27,7 @@ export default function AjustesClient() {
     alert("USER ID: " + (user?.id ?? "null"));
     if (userErr || !user) {
       setLoading(false);
-      alert("INSERT ERROR: " + JSON.stringify(createErr, null, 2));
+      alert("No hay sesión o error de usuario. Vuelve a iniciar sesión.");
       return;
     }
 
