@@ -56,6 +56,28 @@ export default function BalanceBar() {
   const disponible = bankrollInitial + ledgerSum;
   const enJuego = 0; // lo calcularemos cuando tengamos bets
   const total = disponible + enJuego;
+    async function addTestMovement(amount: number) {
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+    if (!user) {
+      alert("No hay sesión");
+      return;
+    }
+
+    const { error } = await supabase.from("ledger").insert({
+      user_id: user.id,
+      type: "test",
+      amount,
+    });
+
+    if (error) {
+      alert("Error insertando movimiento: " + error.message);
+      return;
+    }
+
+    // recargar rápido (simple)
+    location.reload();
+  }
 
   return (
     <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
