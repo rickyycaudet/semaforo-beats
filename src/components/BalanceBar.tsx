@@ -8,6 +8,30 @@ export default function BalanceBar() {
   const [bankrollInitial, setBankrollInitial] = useState<number>(0);
   const [ledgerSum, setLedgerSum] = useState<number>(0);
 
+  async function addTestMovement(amount: number) {
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+
+    if (!user) {
+      alert("No hay sesión");
+      return;
+    }
+
+    const { error } = await supabase.from("ledger").insert({
+      user_id: user.id,
+      type: "test",
+      amount,
+    });
+
+    if (error) {
+      alert("Error insertando movimiento: " + error.message);
+      return;
+    }
+
+    // recargar para ver el saldo actualizado (simple)
+    location.reload();
+  }
+
   useEffect(() => {
     let ignore = false;
 
@@ -39,7 +63,10 @@ export default function BalanceBar() {
           console.warn("ledger error", lErr.message);
           setLedgerSum(0);
         } else {
-          const sum = (rows ?? []).reduce((acc, r: any) => acc + Number(r.amount ?? 0), 0);
+          const sum = (rows ?? []).reduce(
+            (acc, r: any) => acc + Number(r.amount ?? 0),
+            0
+          );
           setLedgerSum(sum);
         }
         setLoading(false);
@@ -56,64 +83,81 @@ export default function BalanceBar() {
   const disponible = bankrollInitial + ledgerSum;
   const enJuego = 0; // lo calcularemos cuando tengamos bets
   const total = disponible + enJuego;
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <button
-          onClick={() => addTestMovement(-10)}
-          style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd", background: "white", cursor: "pointer" }}
-        >
-          -10€ (test)
-        </button>
-        <button
-          onClick={() => addTestMovement(10)}
-          style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd", background: "white", cursor: "pointer" }}
-        >
-          +10€ (test)
-        </button>
-      </div>
-    async function addTestMovement(amount: number) {
-    const { data: userData } = await supabase.auth.getUser();
-    const user = userData?.user;
-    if (!user) {
-      alert("No hay sesión");
-      return;
-    }
-
-    const { error } = await supabase.from("ledger").insert({
-      user_id: user.id,
-      type: "test",
-      amount,
-    });
-
-    if (error) {
-      alert("Error insertando movimiento: " + error.message);
-      return;
-    }
-
-    // recargar rápido (simple)
-    location.reload();
-  }
 
   return (
-    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-      <div style={{ background: "white", border: "1px solid #eee", borderRadius: 12, padding: 12, minWidth: 160 }}>
+    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+      <div
+        style={{
+          background: "white",
+          border: "1px solid #eee",
+          borderRadius: 12,
+          padding: 12,
+          minWidth: 160,
+        }}
+      >
         <div style={{ fontSize: 12, color: "#666" }}>Disponible</div>
         <div style={{ fontSize: 20, fontWeight: 900 }}>
           {loading ? "…" : `${disponible.toFixed(2)}€`}
         </div>
       </div>
 
-      <div style={{ background: "white", border: "1px solid #eee", borderRadius: 12, padding: 12, minWidth: 160 }}>
+      <div
+        style={{
+          background: "white",
+          border: "1px solid #eee",
+          borderRadius: 12,
+          padding: 12,
+          minWidth: 160,
+        }}
+      >
         <div style={{ fontSize: 12, color: "#666" }}>En juego</div>
         <div style={{ fontSize: 20, fontWeight: 900 }}>
           {loading ? "…" : `${enJuego.toFixed(2)}€`}
         </div>
       </div>
 
-      <div style={{ background: "white", border: "1px solid #eee", borderRadius: 12, padding: 12, minWidth: 160 }}>
+      <div
+        style={{
+          background: "white",
+          border: "1px solid #eee",
+          borderRadius: 12,
+          padding: 12,
+          minWidth: 160,
+        }}
+      >
         <div style={{ fontSize: 12, color: "#666" }}>Total</div>
         <div style={{ fontSize: 20, fontWeight: 900 }}>
           {loading ? "…" : `${total.toFixed(2)}€`}
         </div>
+      </div>
+
+      {/* Botones test */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button
+          onClick={() => addTestMovement(-10)}
+          style={{
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: "white",
+            cursor: "pointer",
+          }}
+        >
+          -10€ (test)
+        </button>
+
+        <button
+          onClick={() => addTestMovement(10)}
+          style={{
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: "1px solid #ddd",
+            background: "white",
+            cursor: "pointer",
+          }}
+        >
+          +10€ (test)
+        </button>
       </div>
     </div>
   );
