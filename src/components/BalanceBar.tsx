@@ -56,6 +56,20 @@ export default function BalanceBar() {
   const disponible = bankrollInitial + ledgerSum;
   const enJuego = 0; // lo calcularemos cuando tengamos bets
   const total = disponible + enJuego;
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <button
+          onClick={() => addTestMovement(-10)}
+          style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd", background: "white", cursor: "pointer" }}
+        >
+          -10€ (test)
+        </button>
+        <button
+          onClick={() => addTestMovement(10)}
+          style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #ddd", background: "white", cursor: "pointer" }}
+        >
+          +10€ (test)
+        </button>
+      </div>
     async function addTestMovement(amount: number) {
     const { data: userData } = await supabase.auth.getUser();
     const user = userData?.user;
