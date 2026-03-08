@@ -31,7 +31,8 @@ export async function GET() {
   try {
     const url =
       "https://api.the-odds-api.com/v4/sports/upcoming/odds" +
-      "?apiKey=" + oddsApiKey +
+      "?apiKey=" +
+      oddsApiKey +
       "&regions=eu" +
       "&markets=h2h" +
       "&oddsFormat=decimal" +
@@ -59,17 +60,19 @@ export async function GET() {
       "soccer_uefa_europa_league",
     ]);
 
-    const allowedTennis = (sportKey: string) =>
-      sportKey.startsWith("tennis_");
+    const allowedTennis = (sportKey: string) => sportKey.startsWith("tennis_");
 
     const filtered = data.filter((event) => {
-      return allowedSoccer.has(event.sport_key) || allowedTennis(event.sport_key);
+      return (
+        allowedSoccer.has(event.sport_key) || allowedTennis(event.sport_key)
+      );
     });
 
     const rows = filtered
       .filter((event) => event.home_team && event.away_team)
       .map((event) => ({
         provider_event_id: event.id,
+        provider_sport_key: event.sport_key,
         sport: event.sport_key.startsWith("tennis_") ? "tennis" : "soccer",
         league: event.sport_title,
         home_team: event.home_team as string,
