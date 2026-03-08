@@ -24,11 +24,23 @@ function colorEmoji(c: BetRow["color"]) {
   return "🔴";
 }
 
+function estadoBonito(status: BetRow["status"]) {
+  if (status === "pending") return "Pendiente";
+  if (status === "won") return "Ganada";
+  if (status === "lost") return "Perdida";
+  return "Anulada";
+}
+
+function deporteBonito(sport: string) {
+  if (sport === "soccer") return "Fútbol";
+  if (sport === "tennis") return "Tenis";
+  return sport;
+}
+
 export default function MisApuestasClient() {
   const [loading, setLoading] = useState(true);
   const [bets, setBets] = useState<BetRow[]>([]);
 
-  // form
   const [sport, setSport] = useState<"soccer" | "tennis">("soccer");
   const [eventLabel, setEventLabel] = useState("");
   const [pickLabel, setPickLabel] = useState("");
@@ -69,7 +81,7 @@ export default function MisApuestasClient() {
     }
 
     if (!eventLabel.trim() || !pickLabel.trim()) {
-      alert("Rellena Partido y Pick");
+      alert("Rellena el partido y la apuesta");
       return;
     }
 
@@ -77,14 +89,18 @@ export default function MisApuestasClient() {
     const oddsNum = Number(odds);
     const probNum = Number(prob);
 
-    if (!Number.isFinite(stakeNum) || stakeNum <= 0)
-      return alert("Stake inválido");
-    if (!Number.isFinite(oddsNum) || oddsNum <= 1)
-      return alert("Cuota inválida (debe ser > 1)");
-    if (!Number.isFinite(probNum) || probNum <= 0 || probNum >= 1)
-      return alert("Prob inválida (0-1)");
+    if (!Number.isFinite(stakeNum) || stakeNum <= 0) {
+      return alert("La cantidad apostada no es válida");
+    }
 
-    // 1) crear bet (pending)
+    if (!Number.isFinite(oddsNum) || oddsNum <= 1) {
+      return alert("La cuota no es válida (debe ser mayor que 1)");
+    }
+
+    if (!Number.isFinite(probNum) || probNum <= 0 || probNum >= 1) {
+      return alert("La probabilidad debe estar entre 0 y 1");
+    }
+
     const { data: bet, error: bErr } = await supabase
       .from("bets")
       .insert({
@@ -103,9 +119,10 @@ export default function MisApuestasClient() {
       .select("id")
       .single();
 
-    if (bErr) return alert("Error creando apuesta: " + bErr.message);
+    if (bErr) {
+      return alert("Error creando la apuesta: " + bErr.message);
+    }
 
-    // 2) ledger: bloquear stake (saldo disponible baja)
     const { error: lErr } = await supabase.from("ledger").insert({
       user_id: user.id,
       bet_id: bet.id,
@@ -113,10 +130,10 @@ export default function MisApuestasClient() {
       amount: -stakeNum,
     });
 
-    if (lErr)
-      return alert("Apuesta creada pero error en ledger: " + lErr.message);
+    if (lErr) {
+      return alert("La apuesta se creó, pero hubo un error al descontar el saldo: " + lErr.message);
+    }
 
-    // limpiar form + recargar lista
     setEventLabel("");
     setPickLabel("");
     await load();
@@ -128,16 +145,15 @@ export default function MisApuestasClient() {
     const user = userData?.user;
     if (!user) return alert("No hay sesión");
 
-    if (bet.status !== "pending")
-      return alert("Esta apuesta ya está liquidada.");
+    if (bet.status !== "pending") {
+      return alert("Esta apuesta ya está resuelta");
+    }
 
     const stakeNum = Number(bet.stake);
     const oddsNum = Number(bet.odds_taken);
 
-    // profit neto (para mostrar en tabla)
     const profit = result === "won" ? stakeNum * (oddsNum - 1) : -stakeNum;
 
-    // 1) actualizar bet
     const { error: uErr } = await supabase
       .from("bets")
       .update({
@@ -147,11 +163,12 @@ export default function MisApuestasClient() {
       })
       .eq("id", bet.id);
 
-    if (uErr) return alert("Error actualizando apuesta: " + uErr.message);
+    if (uErr) {
+      return alert("Error actualizando la apuesta: " + uErr.message);
+    }
 
-    // 2) si gana, pagar (stake + premio) a disponible
     if (result === "won") {
-      const payout = stakeNum * oddsNum; // devuelve stake + ganancia
+      const payout = stakeNum * oddsNum;
       const { error: pErr } = await supabase.from("ledger").insert({
         user_id: user.id,
         bet_id: bet.id,
@@ -159,14 +176,13 @@ export default function MisApuestasClient() {
         amount: payout,
       });
 
-      if (pErr)
-        return alert(
-          "Apuesta marcada ganada pero error en payout: " + pErr.message
-        );
+      if (pErr) {
+        return alert("La apuesta se marcó como ganada, pero falló el ingreso del premio: " + pErr.message);
+      }
     }
 
     await load();
-    alert("Apuesta liquidada ✅");
+    alert("Apuesta resuelta ✅");
   }
 
   return (
@@ -179,9 +195,10 @@ export default function MisApuestasClient() {
           padding: 16,
         }}
       >
-        <h2 style={{ fontSize: 18, fontWeight: 800 }}>
-          Añadir apuesta (manual)
-        </h2>
+        <h2 style={{ fontSize: 18, fontWeight: 800 }}>Añadir apuesta manual</h2>
+        <p style={{ marginTop: 6, color: "#666", fontSize: 14 }}>
+          Aquí puedes guardar cualquier apuesta que hayas hecho para llevar el control de tu dinero.
+        </p>
 
         <div
           style={{ display: "grid", gap: 10, marginTop: 12, maxWidth: 640 }}
@@ -204,7 +221,7 @@ export default function MisApuestasClient() {
           </label>
 
           <label>
-            <div style={{ fontSize: 13, marginBottom: 4 }}>Partido</div>
+            <div style={{ fontSize: 13, marginBottom: 4 }}>Partido o evento</div>
             <input
               value={eventLabel}
               onChange={(e) => setEventLabel(e.target.value)}
@@ -219,7 +236,7 @@ export default function MisApuestasClient() {
           </label>
 
           <label>
-            <div style={{ fontSize: 13, marginBottom: 4 }}>Pick</div>
+            <div style={{ fontSize: 13, marginBottom: 4 }}>Tu apuesta</div>
             <input
               value={pickLabel}
               onChange={(e) => setPickLabel(e.target.value)}
@@ -234,7 +251,7 @@ export default function MisApuestasClient() {
           </label>
 
           <label>
-            <div style={{ fontSize: 13, marginBottom: 4 }}>Semáforo</div>
+            <div style={{ fontSize: 13, marginBottom: 4 }}>Nivel del semáforo</div>
             <select
               value={color}
               onChange={(e) => setColor(e.target.value as any)}
@@ -275,7 +292,7 @@ export default function MisApuestasClient() {
             </label>
 
             <label>
-              <div style={{ fontSize: 13, marginBottom: 4 }}>Prob (0-1)</div>
+              <div style={{ fontSize: 13, marginBottom: 4 }}>Probabilidad (0 a 1)</div>
               <input
                 type="number"
                 step="0.01"
@@ -291,7 +308,7 @@ export default function MisApuestasClient() {
             </label>
 
             <label>
-              <div style={{ fontSize: 13, marginBottom: 4 }}>Stake (€)</div>
+              <div style={{ fontSize: 13, marginBottom: 4 }}>Cantidad apostada (€)</div>
               <input
                 type="number"
                 step="0.01"
@@ -318,7 +335,7 @@ export default function MisApuestasClient() {
               cursor: "pointer",
             }}
           >
-            Añadir apuesta
+            Guardar apuesta
           </button>
         </div>
       </div>
@@ -331,13 +348,13 @@ export default function MisApuestasClient() {
           padding: 16,
         }}
       >
-        <h2 style={{ fontSize: 18, fontWeight: 800 }}>Mis apuestas</h2>
+        <h2 style={{ fontSize: 18, fontWeight: 800 }}>Historial de apuestas</h2>
 
         {loading ? (
           <div style={{ marginTop: 10 }}>Cargando…</div>
         ) : bets.length === 0 ? (
           <div style={{ marginTop: 10, color: "#666" }}>
-            Aún no tienes apuestas.
+            Aún no tienes apuestas guardadas.
           </div>
         ) : (
           <div style={{ overflowX: "auto", marginTop: 10 }}>
@@ -348,13 +365,14 @@ export default function MisApuestasClient() {
                 <tr
                   style={{ textAlign: "left", borderBottom: "1px solid #eee" }}
                 >
-                  <th style={{ padding: 8 }}>Color</th>
+                  <th style={{ padding: 8 }}>Semáforo</th>
+                  <th style={{ padding: 8 }}>Deporte</th>
                   <th style={{ padding: 8 }}>Partido</th>
-                  <th style={{ padding: 8 }}>Pick</th>
+                  <th style={{ padding: 8 }}>Apuesta</th>
                   <th style={{ padding: 8 }}>Cuota</th>
-                  <th style={{ padding: 8 }}>Stake</th>
+                  <th style={{ padding: 8 }}>Cantidad</th>
                   <th style={{ padding: 8 }}>Estado</th>
-                  <th style={{ padding: 8 }}>Profit</th>
+                  <th style={{ padding: 8 }}>Ganancia / pérdida</th>
                   <th style={{ padding: 8 }}>Acciones</th>
                 </tr>
               </thead>
@@ -362,6 +380,7 @@ export default function MisApuestasClient() {
                 {bets.map((b) => (
                   <tr key={b.id} style={{ borderBottom: "1px solid #f2f2f2" }}>
                     <td style={{ padding: 8 }}>{colorEmoji(b.color)}</td>
+                    <td style={{ padding: 8 }}>{deporteBonito(b.sport)}</td>
                     <td style={{ padding: 8 }}>{b.event_label}</td>
                     <td style={{ padding: 8 }}>{b.pick_label}</td>
                     <td style={{ padding: 8 }}>
@@ -370,7 +389,7 @@ export default function MisApuestasClient() {
                     <td style={{ padding: 8 }}>
                       {Number(b.stake).toFixed(2)}€
                     </td>
-                    <td style={{ padding: 8 }}>{b.status}</td>
+                    <td style={{ padding: 8 }}>{estadoBonito(b.status)}</td>
                     <td style={{ padding: 8 }}>
                       {Number(b.profit).toFixed(2)}€
                     </td>
