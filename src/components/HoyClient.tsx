@@ -10,6 +10,8 @@ type EventRow = {
   home_team: string;
   away_team: string;
   start_time: string;
+  provider_event_id?: string | null;
+  provider_sport_key?: string | null;
 };
 
 type OfferRow = {
@@ -121,6 +123,9 @@ export default function HoyClient() {
       return;
     }
 
+    const colorToSave =
+      offer.color === "extra" ? "orange" : offer.color;
+
     // 1) Crear apuesta
     const { data: bet, error: betError } = await supabase
       .from("bets")
@@ -129,13 +134,18 @@ export default function HoyClient() {
         sport: event.sport,
         event_label: `${event.home_team} vs ${event.away_team}`,
         pick_label: offer.label,
-        color: offer.color === "extra" ? "orange" : offer.color,
+        color: colorToSave,
         prob_snapshot: Number(offer.probability),
         odds_taken: Number(offer.odds),
         stake: amount,
         stake_source: "manual",
         status: "pending",
         profit: 0,
+
+        provider_event_id: event.provider_event_id ?? null,
+        provider_sport_key: event.provider_sport_key ?? null,
+        market_key: offer.market_key,
+        selection_name: offer.label,
       })
       .select("id")
       .single();
@@ -154,7 +164,10 @@ export default function HoyClient() {
     });
 
     if (ledgerError) {
-      alert("La apuesta se guardó, pero hubo un error al descontar el saldo: " + ledgerError.message);
+      alert(
+        "La apuesta se guardó, pero hubo un error al descontar el saldo: " +
+          ledgerError.message
+      );
       return;
     }
 
@@ -216,7 +229,8 @@ export default function HoyClient() {
             >
               <div>
                 <div style={{ fontWeight: 700 }}>
-                  {badge(offer.color)} {offer.event.home_team} vs {offer.event.away_team}
+                  {badge(offer.color)} {offer.event.home_team} vs{" "}
+                  {offer.event.away_team}
                 </div>
 
                 <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
@@ -225,7 +239,8 @@ export default function HoyClient() {
                 </div>
 
                 <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
-                  {sportLabel(offer.event.sport)} · {offer.event.league} · {formatDate(offer.event.start_time)}
+                  {sportLabel(offer.event.sport)} · {offer.event.league} ·{" "}
+                  {formatDate(offer.event.start_time)}
                 </div>
               </div>
 
@@ -289,7 +304,9 @@ export default function HoyClient() {
                       {badge(offer.color)} {offer.label}
                     </b>
 
-                    <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
+                    <div
+                      style={{ fontSize: 13, color: "#666", marginTop: 4 }}
+                    >
                       Cuota {offer.odds.toFixed(2)} · Probabilidad estimada{" "}
                       {(offer.probability * 100).toFixed(1)}%
                       {offer.bookmaker ? ` · Casa ${offer.bookmaker}` : ""}
