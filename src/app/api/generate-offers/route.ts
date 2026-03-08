@@ -60,6 +60,7 @@ function normalizeNoVig(outcomes: OddsOutcome[]) {
   }));
 
   const sum = implied.reduce((acc, x) => acc + x.p, 0);
+
   if (!sum) {
     return implied.map((x) => ({
       name: x.name,
@@ -134,26 +135,29 @@ export async function GET() {
       );
     }
 
-    const oddsEvents: OddsEvent[] = await res.json();
+    const oddsEvents = (await res.json()) as OddsEvent[];
 
     const offersToInsert: OfferInsert[] = [];
 
     for (const event of events) {
-      const oddsEvent = oddsEvents.find(
-        (oe) => oe.id === event.provider_event_id
-      );
+      const oddsEvent = oddsEvents.find(function (oe) {
+        return oe.id === event.provider_event_id;
+      });
 
       if (!oddsEvent || !oddsEvent.bookmakers || oddsEvent.bookmakers.length === 0) {
         continue;
       }
 
-      const bestByOutcome = new Map<
+      const bestByOutcome: Record<
         string,
         { label: string; odds: number; probability: number; bookmaker: string }
-      >();
+      > = {};
 
       for (const bookmaker of oddsEvent.bookmakers) {
-        const h2hMarket = bookmaker.markets?.find((m) => m.key === "h2h");
+        const h2hMarket = bookmaker.markets?.find(function (m) {
+          return m.key === "h2h";
+        });
+
         if (!h2hMarket || !h2hMarket.outcomes || h2hMarket.outcomes.length < 2) {
           continue;
         }
@@ -161,22 +165,22 @@ export async function GET() {
         const fairOutcomes = normalizeNoVig(h2hMarket.outcomes);
 
         for (const outcome of fairOutcomes) {
-          const existing = bestByOutcome.get(outcome.name);
+          const existing = bestByOutcome[outcome.name];
 
           if (!existing || outcome.price > existing.odds) {
-            bestByOutcome.set(outcome.name, {
+            bestByOutcome[outcome.name] = {
               label: outcome.name,
               odds: outcome.price,
               probability: outcome.probability,
               bookmaker: bookmaker.title,
-            });
+            };
           }
         }
       }
 
-      const ranked = Array.from(bestByOutcome.values()).sort(
-        (a, b) => b.probability - a.probability
-      );
+      const ranked = Object.values(bestByOutcome).sort(function (a, b) {
+        return b.probability - a.probability;
+      });
 
       if (ranked.length < 2) {
         continue;
@@ -184,7 +188,7 @@ export async function GET() {
 
       const colors: Array<"green" | "orange" | "red"> = ["green", "orange", "red"];
 
-      ranked.slice(0, 3).forEach((pick, index) => {
+      ranked.slice(0, 3).forEach(function (pick, index) {
         if (!colors[index]) return;
 
         offersToInsert.push({
@@ -207,7 +211,11 @@ export async function GET() {
       });
     }
 
-    const eventIds = [...new Set(offersToInsert.map((o) => o.event_id))];
+    const eventIdsMap: Record<string, boolean> = {};
+    for (const offer of offersToInsert) {
+      eventIdsMap[offer.event_id] = true;
+    }
+    const eventIds = Object.keys(eventIdsMap);
 
     const { error: deleteErr } = await supabase
       .from("daily_offers")
