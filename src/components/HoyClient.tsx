@@ -33,6 +33,8 @@ type RecommendedOffer = OfferRow & {
   event: EventWithOffers;
 };
 
+type StrategyKey = "auto" | "safe" | "balanced" | "aggressive";
+
 function badge(color: OfferRow["color"]) {
   if (color === "green") return "🟢";
   if (color === "orange") return "🟠";
@@ -63,11 +65,38 @@ function sportLabel(sport: string) {
   return sport;
 }
 
-function getRecommendedPercent(color: OfferRow["color"]) {
-  if (color === "green") return 0.04;   // 4%
-  if (color === "orange") return 0.025; // 2.5%
-  if (color === "red") return 0.015;    // 1.5%
+function getAutoPercent(color: OfferRow["color"]) {
+  if (color === "green") return 0.04;
+  if (color === "orange") return 0.025;
+  if (color === "red") return 0.015;
   return 0.02;
+}
+
+function getStrategyPercent(strategy: StrategyKey, color: OfferRow["color"]) {
+  if (strategy === "safe") return 0.02;
+  if (strategy === "balanced") return 0.04;
+  if (strategy === "aggressive") return 0.07;
+  return getAutoPercent(color);
+}
+
+function strategyLabel(strategy: StrategyKey) {
+  if (strategy === "safe") return "Conservadora";
+  if (strategy === "balanced") return "Equilibrada";
+  if (strategy === "aggressive") return "Agresiva";
+  return "Automática";
+}
+
+function strategyDescription(strategy: StrategyKey) {
+  if (strategy === "safe") {
+    return "Pensada para arriesgar poco y proteger el saldo.";
+  }
+  if (strategy === "balanced") {
+    return "Una opción intermedia entre prudencia y rentabilidad.";
+  }
+  if (strategy === "aggressive") {
+    return "Más riesgo buscando más beneficio potencial.";
+  }
+  return "El sistema decide la cantidad según el color del semáforo.";
 }
 
 export default function HoyClient() {
@@ -81,6 +110,7 @@ export default function HoyClient() {
   const [selectedEvent, setSelectedEvent] = useState<EventWithOffers | null>(null);
   const [selectedOffer, setSelectedOffer] = useState<OfferRow | null>(null);
   const [betAmount, setBetAmount] = useState<string>("");
+  const [selectedStrategy, setSelectedStrategy] = useState<StrategyKey>("auto");
 
   const availableBalance = useMemo(() => {
     return bankrollInitial + ledgerSum;
@@ -164,11 +194,18 @@ export default function HoyClient() {
     loadAll();
   }, []);
 
+  function applyStrategy(strategy: StrategyKey, offer: OfferRow) {
+    const percent = Math.min(getStrategyPercent(strategy, offer.color), 0.1);
+    const amount = availableBalance * percent;
+    setSelectedStrategy(strategy);
+    setBetAmount(amount > 0 ? amount.toFixed(2) : "");
+  }
+
   function openBetModal(event: EventWithOffers, offer: OfferRow) {
     setSelectedEvent(event);
     setSelectedOffer(offer);
-
-    const pct = Math.min(getRecommendedPercent(offer.color), 0.1);
+    setSelectedStrategy("auto");
+    const pct = Math.min(getAutoPercent(offer.color), 0.1);
     const recommended = availableBalance * pct;
     setBetAmount(recommended > 0 ? recommended.toFixed(2) : "");
   }
@@ -177,6 +214,7 @@ export default function HoyClient() {
     setSelectedEvent(null);
     setSelectedOffer(null);
     setBetAmount("");
+    setSelectedStrategy("auto");
   }
 
   async function confirmBet() {
@@ -225,7 +263,7 @@ export default function HoyClient() {
         prob_snapshot: Number(selectedOffer.probability),
         odds_taken: Number(selectedOffer.odds),
         stake: amount,
-        stake_source: "manual",
+        stake_source: selectedStrategy,
         status: "pending",
         profit: 0,
         provider_event_id: selectedEvent.provider_event_id ?? null,
@@ -280,6 +318,11 @@ export default function HoyClient() {
     .filter((o) => o.color === "green")
     .sort((a, b) => b.probability - a.probability)
     .slice(0, 3);
+
+  const currentPercent =
+    selectedOffer
+      ? Math.min(getStrategyPercent(selectedStrategy, selectedOffer.color), 0.1)
+      : 0;
 
   return (
     <>
@@ -363,9 +406,7 @@ export default function HoyClient() {
                 }}
               >
                 <button
-                  onClick={() =>
-                    setExpandedEventId(isOpen ? null : event.id)
-                  }
+                  onClick={() => setExpandedEventId(isOpen ? null : event.id)}
                   style={{
                     width: "100%",
                     background: "white",
@@ -492,8 +533,52 @@ export default function HoyClient() {
             </div>
 
             <div style={{ marginTop: 16 }}>
+              <div style={{ fontWeight: 800, marginBottom: 10 }}>
+                Estrategia de apuesta
+              </div>
+
+              <div style={{ display: "grid", gap: 10 }}>
+                {(["auto", "safe", "balanced", "aggressive"] as StrategyKey[]).map(
+                  (strategy) => {
+                    const pct = Math.min(
+                      getStrategyPercent(strategy, selectedOffer.color),
+                      0.1
+                    );
+                    const euros = availableBalance * pct;
+                    const active = selectedStrategy === strategy;
+
+                    return (
+                      <button
+                        key={strategy}
+                        onClick={() => applyStrategy(strategy, selectedOffer)}
+                        style={{
+                          textAlign: "left",
+                          borderRadius: 12,
+                          border: active ? "2px solid #111827" : "1px solid #ddd",
+                          background: active ? "#f9fafb" : "white",
+                          padding: 12,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div style={{ fontWeight: 800 }}>
+                          {strategyLabel(strategy)} · {(pct * 100).toFixed(1)}%
+                        </div>
+                        <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
+                          {strategyDescription(strategy)}
+                        </div>
+                        <div style={{ fontSize: 13, color: "#444", marginTop: 6 }}>
+                          Cantidad sugerida: <b>{euros.toFixed(2)}€</b>
+                        </div>
+                      </button>
+                    );
+                  }
+                )}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16 }}>
               <div style={{ fontWeight: 800, marginBottom: 8 }}>
-                Recomendación del sistema
+                Recomendación actual
               </div>
 
               <div
@@ -510,18 +595,13 @@ export default function HoyClient() {
                   Saldo disponible: <b>{availableBalance.toFixed(2)}€</b>
                 </div>
                 <div>
-                  Porcentaje recomendado:{" "}
-                  <b>{(Math.min(getRecommendedPercent(selectedOffer.color), 0.1) * 100).toFixed(1)}%</b>
+                  Porcentaje recomendado: <b>{(currentPercent * 100).toFixed(1)}%</b>
                 </div>
                 <div>
-                  Cantidad recomendada:{" "}
-                  <b>
-                    {(availableBalance * Math.min(getRecommendedPercent(selectedOffer.color), 0.1)).toFixed(2)}€
-                  </b>
+                  Cantidad recomendada: <b>{(availableBalance * currentPercent).toFixed(2)}€</b>
                 </div>
                 <div>
-                  Máximo permitido ahora (10%):{" "}
-                  <b>{(availableBalance * 0.1).toFixed(2)}€</b>
+                  Máximo permitido ahora (10%): <b>{(availableBalance * 0.1).toFixed(2)}€</b>
                 </div>
               </div>
             </div>
