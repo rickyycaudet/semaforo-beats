@@ -27,6 +27,10 @@ type EventWithOffers = EventRow & {
   offers: OfferRow[];
 };
 
+type RecommendedOffer = OfferRow & {
+  event: EventWithOffers;
+};
+
 function badge(color: OfferRow["color"]) {
   if (color === "green") return "🟢";
   if (color === "orange") return "🟠";
@@ -44,6 +48,12 @@ function formatDate(dateStr: string) {
   });
 }
 
+function sportLabel(sport: string) {
+  if (sport === "soccer") return "Fútbol";
+  if (sport === "tennis") return "Tenis";
+  return sport;
+}
+
 export default function HoyClient() {
   const [loading, setLoading] = useState(true);
   const [events, setEvents] = useState<EventWithOffers[]>([]);
@@ -51,19 +61,31 @@ export default function HoyClient() {
   async function load() {
     setLoading(true);
 
-    const { data: eventsData } = await supabase
+    const { data: eventsData, error: eventsError } = await supabase
       .from("daily_events")
       .select("*")
       .order("start_time", { ascending: true });
 
-    const { data: offersData } = await supabase
+    if (eventsError) {
+      alert("Error cargando partidos: " + eventsError.message);
+      setLoading(false);
+      return;
+    }
+
+    const { data: offersData, error: offersError } = await supabase
       .from("daily_offers")
       .select("*");
+
+    if (offersError) {
+      alert("Error cargando opciones: " + offersError.message);
+      setLoading(false);
+      return;
+    }
 
     const now = new Date();
 
     const merged: EventWithOffers[] = (eventsData ?? [])
-      .filter((e: any) => new Date(e.start_time) > now) // ocultar partidos empezados
+      .filter((e: any) => new Date(e.start_time) > now)
       .map((event: any) => ({
         ...event,
         offers: (offersData ?? []).filter((o: any) => o.event_id === event.id),
@@ -77,6 +99,69 @@ export default function HoyClient() {
     load();
   }, []);
 
+  async function apostar(event: EventWithOffers, offer: OfferRow) {
+    const amountText = prompt(
+      `¿Cuánto quieres apostar en:\n\n${event.home_team} vs ${event.away_team}\n${offer.label}\nCuota ${offer.odds.toFixed(2)}`
+    );
+
+    if (amountText === null) return;
+
+    const amount = Number(amountText.replace(",", "."));
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      alert("La cantidad apostada no es válida.");
+      return;
+    }
+
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+
+    if (!user) {
+      alert("No hay sesión iniciada.");
+      return;
+    }
+
+    // 1) Crear apuesta
+    const { data: bet, error: betError } = await supabase
+      .from("bets")
+      .insert({
+        user_id: user.id,
+        sport: event.sport,
+        event_label: `${event.home_team} vs ${event.away_team}`,
+        pick_label: offer.label,
+        color: offer.color === "extra" ? "orange" : offer.color,
+        prob_snapshot: Number(offer.probability),
+        odds_taken: Number(offer.odds),
+        stake: amount,
+        stake_source: "manual",
+        status: "pending",
+        profit: 0,
+      })
+      .select("id")
+      .single();
+
+    if (betError) {
+      alert("Error guardando la apuesta: " + betError.message);
+      return;
+    }
+
+    // 2) Descontar saldo disponible
+    const { error: ledgerError } = await supabase.from("ledger").insert({
+      user_id: user.id,
+      bet_id: bet.id,
+      type: "stake_lock",
+      amount: -amount,
+    });
+
+    if (ledgerError) {
+      alert("La apuesta se guardó, pero hubo un error al descontar el saldo: " + ledgerError.message);
+      return;
+    }
+
+    alert("Apuesta guardada ✅");
+    window.location.reload();
+  }
+
   if (loading) {
     return <div>Cargando partidos…</div>;
   }
@@ -85,7 +170,7 @@ export default function HoyClient() {
     return <div>No hay partidos disponibles.</div>;
   }
 
-  const allOffers = events.flatMap((e) =>
+  const allOffers: RecommendedOffer[] = events.flatMap((e) =>
     e.offers.map((o) => ({
       ...o,
       event: e,
@@ -99,7 +184,6 @@ export default function HoyClient() {
 
   return (
     <div style={{ display: "grid", gap: 20 }}>
-      {/* RECOMENDADAS */}
       <div
         style={{
           background: "#f8fafc",
@@ -111,6 +195,9 @@ export default function HoyClient() {
         <h2 style={{ fontSize: 20, fontWeight: 800 }}>
           ⭐ Apuestas recomendadas de hoy
         </h2>
+        <p style={{ marginTop: 6, color: "#666", fontSize: 14 }}>
+          Aquí tienes las opciones más interesantes del día según el sistema.
+        </p>
 
         <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
           {recommended.map((offer) => (
@@ -124,17 +211,21 @@ export default function HoyClient() {
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
+                gap: 12,
               }}
             >
               <div>
                 <div style={{ fontWeight: 700 }}>
-                  {badge(offer.color)} {offer.event.home_team} vs{" "}
-                  {offer.event.away_team}
+                  {badge(offer.color)} {offer.event.home_team} vs {offer.event.away_team}
                 </div>
 
-                <div style={{ fontSize: 13, color: "#666" }}>
+                <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
                   {offer.label} · cuota {offer.odds.toFixed(2)} · probabilidad{" "}
                   {(offer.probability * 100).toFixed(1)}%
+                </div>
+
+                <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
+                  {sportLabel(offer.event.sport)} · {offer.event.league} · {formatDate(offer.event.start_time)}
                 </div>
               </div>
 
@@ -146,11 +237,7 @@ export default function HoyClient() {
                   background: "white",
                   cursor: "pointer",
                 }}
-                onClick={() =>
-                  alert(
-                    "En el siguiente paso conectaremos este botón para guardar la apuesta."
-                  )
-                }
+                onClick={() => apostar(offer.event, offer)}
               >
                 Apostar
               </button>
@@ -159,7 +246,6 @@ export default function HoyClient() {
         </div>
       </div>
 
-      {/* RESTO DE PARTIDOS */}
       {events.map((event) => (
         <div
           key={event.id}
@@ -180,48 +266,52 @@ export default function HoyClient() {
             </h3>
           </div>
 
-          <div style={{ display: "grid", gap: 10 }}>
-            {event.offers.map((offer) => (
-              <div
-                key={offer.id}
-                style={{
-                  border: "1px solid #eee",
-                  borderRadius: 10,
-                  padding: 10,
-                  display: "flex",
-                  justifyContent: "space-between",
-                }}
-              >
-                <div>
-                  <b>
-                    {badge(offer.color)} {offer.label}
-                  </b>
-
-                  <div style={{ fontSize: 13, color: "#666" }}>
-                    cuota {offer.odds.toFixed(2)} · probabilidad{" "}
-                    {(offer.probability * 100).toFixed(1)}%
-                  </div>
-                </div>
-
-                <button
+          {event.offers.length === 0 ? (
+            <div style={{ color: "#666" }}>
+              Este partido aún no tiene opciones cargadas.
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {event.offers.map((offer) => (
+                <div
+                  key={offer.id}
                   style={{
-                    padding: "6px 10px",
+                    border: "1px solid #eee",
                     borderRadius: 10,
-                    border: "1px solid #ddd",
-                    background: "white",
-                    cursor: "pointer",
+                    padding: 10,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
                   }}
-                  onClick={() =>
-                    alert(
-                      "En el siguiente paso conectaremos este botón para guardar la apuesta."
-                    )
-                  }
                 >
-                  Apostar
-                </button>
-              </div>
-            ))}
-          </div>
+                  <div>
+                    <b>
+                      {badge(offer.color)} {offer.label}
+                    </b>
+
+                    <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
+                      Cuota {offer.odds.toFixed(2)} · Probabilidad estimada{" "}
+                      {(offer.probability * 100).toFixed(1)}%
+                      {offer.bookmaker ? ` · Casa ${offer.bookmaker}` : ""}
+                    </div>
+                  </div>
+
+                  <button
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 10,
+                      border: "1px solid #ddd",
+                      background: "white",
+                      cursor: "pointer",
+                    }}
+                    onClick={() => apostar(event, offer)}
+                  >
+                    Apostar
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>
