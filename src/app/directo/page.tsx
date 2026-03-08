@@ -1,4 +1,6 @@
 import AuthGate from "../../components/AuthGate";
+import { createClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
 
 type ScoreItem = {
   name: string;
@@ -25,6 +27,16 @@ type DisplayMatch = {
   homeScore: string;
   awayScore: string;
   commenceTime: string;
+};
+
+type UserBet = {
+  id: string;
+  event_label: string;
+  pick_label: string;
+  stake: number;
+  odds_taken: number;
+  status: "pending" | "won" | "lost" | "void";
+  profit: number;
 };
 
 const SOCCER_KEYS = [
@@ -66,6 +78,13 @@ function formatDate(dateStr: string) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function estadoBonito(status: UserBet["status"]) {
+  if (status === "pending") return "Pendiente";
+  if (status === "won") return "Ganada";
+  if (status === "lost") return "Perdida";
+  return "Anulada";
 }
 
 async function getLiveMatches(): Promise<DisplayMatch[]> {
@@ -125,8 +144,46 @@ async function getLiveMatches(): Promise<DisplayMatch[]> {
   });
 }
 
+async function getUserBets(): Promise<UserBet[]> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+  const cookieStore = cookies();
+  const accessToken = cookieStore.get("sb-access-token")?.value;
+
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: accessToken
+      ? {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      : undefined,
+  });
+
+  const { data } = await supabase
+    .from("bets")
+    .select("id,event_label,pick_label,stake,odds_taken,status,profit")
+    .order("placed_at", { ascending: false });
+
+  return (data ?? []) as UserBet[];
+}
+
+function matchBetsForLiveGame(match: DisplayMatch, bets: UserBet[]) {
+  const home = normalizeText(match.homeTeam);
+  const away = normalizeText(match.awayTeam);
+
+  return bets.filter((bet) => {
+    const label = normalizeText(bet.event_label);
+    return label.includes(home) && label.includes(away);
+  });
+}
+
 export default async function DirectoPage() {
-  const liveMatches = await getLiveMatches();
+  const [liveMatches, userBets] = await Promise.all([
+    getLiveMatches(),
+    getUserBets(),
+  ]);
 
   return (
     <AuthGate>
@@ -136,7 +193,7 @@ export default async function DirectoPage() {
             Apuestas en directo
           </h1>
           <p style={{ marginTop: 8, color: "#666" }}>
-            Aquí verás los partidos que están en juego ahora mismo y su marcador.
+            Aquí verás los partidos que están en juego ahora mismo, su marcador y tus apuestas relacionadas.
           </p>
         </div>
 
@@ -153,56 +210,96 @@ export default async function DirectoPage() {
           </div>
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
-            {liveMatches.map((match) => (
-              <div
-                key={match.id}
-                style={{
-                  background: "white",
-                  border: "1px solid #eee",
-                  borderRadius: 14,
-                  padding: 16,
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.03)",
-                }}
-              >
-                <div style={{ fontSize: 12, color: "#666" }}>
-                  🔴 EN DIRECTO · {match.league} · {formatDate(match.commenceTime)}
-                </div>
+            {liveMatches.map((match) => {
+              const relatedBets = matchBetsForLiveGame(match, userBets);
 
+              return (
                 <div
+                  key={match.id}
                   style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto",
-                    gap: 12,
-                    alignItems: "center",
-                    marginTop: 10,
+                    background: "white",
+                    border: "1px solid #eee",
+                    borderRadius: 14,
+                    padding: 16,
+                    boxShadow: "0 4px 12px rgba(0,0,0,0.03)",
                   }}
                 >
-                  <div>
-                    <div style={{ fontSize: 18, fontWeight: 800 }}>
-                      {match.homeTeam}
-                    </div>
-                    <div style={{ fontSize: 18, fontWeight: 800, marginTop: 6 }}>
-                      {match.awayTeam}
-                    </div>
+                  <div style={{ fontSize: 12, color: "#666" }}>
+                    🔴 EN DIRECTO · {match.league} · {formatDate(match.commenceTime)}
                   </div>
 
                   <div
                     style={{
-                      minWidth: 72,
-                      textAlign: "center",
-                      borderRadius: 12,
-                      background: "#f8fafc",
-                      border: "1px solid #e5e7eb",
-                      padding: 12,
+                      display: "grid",
+                      gridTemplateColumns: "1fr auto",
+                      gap: 12,
+                      alignItems: "center",
+                      marginTop: 10,
                     }}
                   >
-                    <div style={{ fontSize: 24, fontWeight: 900 }}>
-                      {match.homeScore} - {match.awayScore}
+                    <div>
+                      <div style={{ fontSize: 18, fontWeight: 800 }}>
+                        {match.homeTeam}
+                      </div>
+                      <div style={{ fontSize: 18, fontWeight: 800, marginTop: 6 }}>
+                        {match.awayTeam}
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        minWidth: 72,
+                        textAlign: "center",
+                        borderRadius: 12,
+                        background: "#f8fafc",
+                        border: "1px solid #e5e7eb",
+                        padding: 12,
+                      }}
+                    >
+                      <div style={{ fontSize: 24, fontWeight: 900 }}>
+                        {match.homeScore} - {match.awayScore}
+                      </div>
                     </div>
                   </div>
+
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>
+                      Tus apuestas en este partido
+                    </div>
+
+                    {relatedBets.length === 0 ? (
+                      <div style={{ color: "#666", fontSize: 14 }}>
+                        No tienes apuestas guardadas en este partido.
+                      </div>
+                    ) : (
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {relatedBets.map((bet) => (
+                          <div
+                            key={bet.id}
+                            style={{
+                              border: "1px solid #eee",
+                              borderRadius: 12,
+                              padding: 12,
+                              background: "#fafafa",
+                            }}
+                          >
+                            <div style={{ fontWeight: 700 }}>{bet.pick_label}</div>
+                            <div style={{ fontSize: 13, color: "#666", marginTop: 6 }}>
+                              Cantidad apostada: {Number(bet.stake).toFixed(2)}€ ·
+                              Cuota: {Number(bet.odds_taken).toFixed(2)} ·
+                              Estado: {estadoBonito(bet.status)}
+                            </div>
+                            <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
+                              Ganancia / pérdida: {Number(bet.profit).toFixed(2)}€
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
