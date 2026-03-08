@@ -97,8 +97,24 @@ export default function HoyClient() {
     setLoading(false);
   }
 
+  async function settlePendingInBackground() {
+    try {
+      await fetch("/api/settle-bets", {
+        method: "GET",
+        cache: "no-store",
+      });
+    } catch (error) {
+      console.warn("No se pudieron cerrar apuestas en segundo plano");
+    }
+  }
+
   useEffect(() => {
-    load();
+    async function init() {
+      await settlePendingInBackground();
+      await load();
+    }
+
+    init();
   }, []);
 
   async function apostar(event: EventWithOffers, offer: OfferRow) {
@@ -123,10 +139,8 @@ export default function HoyClient() {
       return;
     }
 
-    const colorToSave =
-      offer.color === "extra" ? "orange" : offer.color;
+    const colorToSave = offer.color === "extra" ? "orange" : offer.color;
 
-    // 1) Crear apuesta
     const { data: bet, error: betError } = await supabase
       .from("bets")
       .insert({
@@ -141,7 +155,6 @@ export default function HoyClient() {
         stake_source: "manual",
         status: "pending",
         profit: 0,
-
         provider_event_id: event.provider_event_id ?? null,
         provider_sport_key: event.provider_sport_key ?? null,
         market_key: offer.market_key,
@@ -155,7 +168,6 @@ export default function HoyClient() {
       return;
     }
 
-    // 2) Descontar saldo disponible
     const { error: ledgerError } = await supabase.from("ledger").insert({
       user_id: user.id,
       bet_id: bet.id,
