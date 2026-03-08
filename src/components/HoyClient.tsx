@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import ComboBuilder, { ComboPick } from "./ComboBuilder";
 
 type EventRow = {
   id: string;
@@ -112,6 +113,8 @@ export default function HoyClient() {
   const [betAmount, setBetAmount] = useState<string>("");
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyKey>("auto");
 
+  const [comboPicks, setComboPicks] = useState<ComboPick[]>([]);
+
   const availableBalance = useMemo(() => {
     return bankrollInitial + ledgerSum;
   }, [bankrollInitial, ledgerSum]);
@@ -215,6 +218,34 @@ export default function HoyClient() {
     setSelectedOffer(null);
     setBetAmount("");
     setSelectedStrategy("auto");
+  }
+
+  function addToCombo(event: EventWithOffers, offer: OfferRow) {
+    const pickId = `${event.id}-${offer.id}`;
+
+    setComboPicks((prev) => {
+      const alreadyExists = prev.some((p) => p.id === pickId);
+      if (alreadyExists) return prev;
+
+      return [
+        ...prev,
+        {
+          id: pickId,
+          eventLabel: `${event.home_team} vs ${event.away_team}`,
+          pickLabel: offer.label,
+          odds: Number(offer.odds),
+          color: offer.color,
+        },
+      ];
+    });
+  }
+
+  function removeFromCombo(id: string) {
+    setComboPicks((prev) => prev.filter((pick) => pick.id !== id));
+  }
+
+  function clearCombo() {
+    setComboPicks([]);
   }
 
   async function confirmBet() {
@@ -327,6 +358,12 @@ export default function HoyClient() {
   return (
     <>
       <div style={{ display: "grid", gap: 20 }}>
+        <ComboBuilder
+          picks={comboPicks}
+          onRemovePick={removeFromCombo}
+          onClear={clearCombo}
+        />
+
         <div
           style={{
             background: "linear-gradient(135deg, #f8fafc 0%, #eef6ff 100%)",
@@ -379,12 +416,20 @@ export default function HoyClient() {
                   </div>
                 </div>
 
-                <button
-                  style={buttonStylePrimary}
-                  onClick={() => openBetModal(offer.event, offer)}
-                >
-                  Apostar
-                </button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    style={buttonStyleSecondary}
+                    onClick={() => addToCombo(offer.event, offer)}
+                  >
+                    Añadir a combinada
+                  </button>
+                  <button
+                    style={buttonStylePrimary}
+                    onClick={() => openBetModal(offer.event, offer)}
+                  >
+                    Apostar
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -474,12 +519,21 @@ export default function HoyClient() {
                             </div>
                           </div>
 
-                          <button
-                            style={buttonStyleSecondary}
-                            onClick={() => openBetModal(event, offer)}
-                          >
-                            Apostar
-                          </button>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <button
+                              style={buttonStyleSecondary}
+                              onClick={() => addToCombo(event, offer)}
+                            >
+                              Añadir a combinada
+                            </button>
+
+                            <button
+                              style={buttonStyleSecondary}
+                              onClick={() => openBetModal(event, offer)}
+                            >
+                              Apostar
+                            </button>
+                          </div>
                         </div>
                       ))
                     )}
