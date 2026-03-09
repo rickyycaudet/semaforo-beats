@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
 
 export type ComboPick = {
   id: string;
@@ -29,6 +30,7 @@ export default function ComboBuilder({
   onClear,
 }: Props) {
   const [amount, setAmount] = useState<string>("10");
+  const [saving, setSaving] = useState(false);
 
   const combinedOdds = useMemo(() => {
     if (picks.length === 0) return 0;
@@ -45,6 +47,88 @@ export default function ComboBuilder({
     Number.isFinite(amountNumber) && amountNumber > 0 && combinedOdds > 0
       ? possibleReturn - amountNumber
       : 0;
+
+  async function saveCombo() {
+    if (picks.length < 2) {
+      alert("Añade al menos 2 apuestas para crear una combinada.");
+      return;
+    }
+
+    const stake = Number(String(amount).replace(",", "."));
+
+    if (!Number.isFinite(stake) || stake <= 0) {
+      alert("La cantidad apostada no es válida.");
+      return;
+    }
+
+    setSaving(true);
+
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData?.user;
+
+    if (!user) {
+      setSaving(false);
+      alert("No hay sesión iniciada.");
+      return;
+    }
+
+    // 1) Crear combinada principal
+    const { data: comboBet, error: comboError } = await supabase
+      .from("combo_bets")
+      .insert({
+        user_id: user.id,
+        total_odds: combinedOdds,
+        stake,
+        status: "pending",
+        profit: 0,
+      })
+      .select("id")
+      .single();
+
+    if (comboError) {
+      setSaving(false);
+      alert("Error guardando la combinada: " + comboError.message);
+      return;
+    }
+
+    // 2) Guardar selecciones de la combinada
+    const itemsPayload = picks.map((pick) => ({
+      combo_bet_id: comboBet.id,
+      event_label: pick.eventLabel,
+      pick_label: pick.pickLabel,
+      odds: pick.odds,
+      color: pick.color,
+    }));
+
+    const { error: itemsError } = await supabase
+      .from("combo_bet_items")
+      .insert(itemsPayload);
+
+    if (itemsError) {
+      setSaving(false);
+      alert("La combinada se creó, pero falló al guardar las selecciones: " + itemsError.message);
+      return;
+    }
+
+    // 3) Descontar saldo
+    const { error: ledgerError } = await supabase.from("ledger").insert({
+      user_id: user.id,
+      type: "combo_stake_lock",
+      amount: -stake,
+    });
+
+    if (ledgerError) {
+      setSaving(false);
+      alert("La combinada se guardó, pero falló al descontar el saldo: " + ledgerError.message);
+      return;
+    }
+
+    setSaving(false);
+    alert("Combinada guardada ✅");
+    onClear();
+    setAmount("10");
+    window.location.reload();
+  }
 
   return (
     <div
@@ -230,6 +314,23 @@ export default function ComboBuilder({
               Esta combinada es una <b>estimación interna</b> de tu panel. La cuota real
               final puede variar en la casa de apuestas.
             </div>
+
+            <button
+              onClick={saveCombo}
+              disabled={saving}
+              style={{
+                border: "none",
+                background: "#111827",
+                color: "white",
+                borderRadius: 12,
+                padding: "12px 14px",
+                cursor: saving ? "default" : "pointer",
+                fontWeight: 800,
+                opacity: saving ? 0.7 : 1,
+              }}
+            >
+              {saving ? "Guardando..." : "Guardar combinada"}
+            </button>
           </div>
         </>
       )}
