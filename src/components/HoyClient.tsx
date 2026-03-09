@@ -102,6 +102,7 @@ function strategyDescription(strategy: StrategyKey) {
 
 export default function HoyClient() {
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [events, setEvents] = useState<EventWithOffers[]>([]);
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
 
@@ -196,6 +197,51 @@ export default function HoyClient() {
   useEffect(() => {
     loadAll();
   }, []);
+
+  async function refreshMatches() {
+    setRefreshing(true);
+
+    try {
+      const importRes = await fetch("/api/import-events", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const importData = await importRes.json();
+
+      if (!importRes.ok) {
+        alert(
+          "Error actualizando partidos: " +
+            (importData?.details || importData?.error || "Error desconocido")
+        );
+        setRefreshing(false);
+        return;
+      }
+
+      const offersRes = await fetch("/api/generate-offers", {
+        method: "GET",
+        cache: "no-store",
+      });
+
+      const offersData = await offersRes.json();
+
+      if (!offersRes.ok) {
+        alert(
+          "Los partidos se actualizaron, pero falló la generación de apuestas: " +
+            (offersData?.details || offersData?.error || "Error desconocido")
+        );
+        setRefreshing(false);
+        return;
+      }
+
+      await loadAll();
+      alert("Partidos y apuestas actualizados ✅");
+    } catch (error: any) {
+      alert("Error actualizando: " + (error?.message ?? "Error desconocido"));
+    }
+
+    setRefreshing(false);
+  }
 
   function applyStrategy(strategy: StrategyKey, offer: OfferRow) {
     const percent = Math.min(getStrategyPercent(strategy, offer.color), 0.1);
@@ -334,10 +380,6 @@ export default function HoyClient() {
     return <div>Cargando partidos…</div>;
   }
 
-  if (events.length === 0) {
-    return <div>No hay partidos disponibles.</div>;
-  }
-
   const allOffers: RecommendedOffer[] = events.flatMap((e) =>
     e.offers.map((o) => ({
       ...o,
@@ -358,191 +400,246 @@ export default function HoyClient() {
   return (
     <>
       <div style={{ display: "grid", gap: 20 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 12, color: "#666" }}>Panel inteligente</div>
+            <div style={{ fontSize: 24, fontWeight: 900 }}>
+              Partidos y apuestas del día
+            </div>
+          </div>
+
+          <button
+            onClick={refreshMatches}
+            disabled={refreshing}
+            style={{
+              padding: "12px 16px",
+              borderRadius: 12,
+              border: "1px solid #d1d5db",
+              background: "white",
+              cursor: refreshing ? "default" : "pointer",
+              fontWeight: 800,
+              opacity: refreshing ? 0.7 : 1,
+            }}
+          >
+            {refreshing ? "Actualizando..." : "Actualizar partidos"}
+          </button>
+        </div>
+
         <ComboBuilder
           picks={comboPicks}
           onRemovePick={removeFromCombo}
           onClear={clearCombo}
         />
 
-        <div
-          style={{
-            background: "linear-gradient(135deg, #f8fafc 0%, #eef6ff 100%)",
-            border: "1px solid #e5e7eb",
-            borderRadius: 18,
-            padding: 20,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.04)",
-          }}
-        >
-          <h2 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>
-            ⭐ Apuestas recomendadas de hoy
-          </h2>
-          <p style={{ marginTop: 8, color: "#666", fontSize: 14 }}>
-            Estas son las opciones que el sistema considera más interesantes ahora mismo.
-          </p>
-
-          <div style={{ display: "grid", gap: 12, marginTop: 14 }}>
-            {recommended.map((offer) => (
-              <div
-                key={offer.id}
-                style={{
-                  background: "white",
-                  border: "1px solid #eee",
-                  borderRadius: 14,
-                  padding: 14,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 12,
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.03)",
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: 16 }}>
-                    {badge(offer.color)} {offer.event.home_team} vs {offer.event.away_team}
-                  </div>
-
-                  <div style={{ fontSize: 14, color: "#555", marginTop: 6 }}>
-                    {offer.label}
-                  </div>
-
-                  <div style={{ fontSize: 13, color: "#777", marginTop: 6 }}>
-                    Cuota {offer.odds.toFixed(2)} · Probabilidad estimada{" "}
-                    {(offer.probability * 100).toFixed(1)}%
-                  </div>
-
-                  <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>
-                    {sportLabel(offer.event.sport)} · {offer.event.league} ·{" "}
-                    {formatDate(offer.event.start_time)}
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    style={buttonStyleSecondary}
-                    onClick={() => addToCombo(offer.event, offer)}
-                  >
-                    Añadir a combinada
-                  </button>
-                  <button
-                    style={buttonStylePrimary}
-                    onClick={() => openBetModal(offer.event, offer)}
-                  >
-                    Apostar
-                  </button>
-                </div>
-              </div>
-            ))}
+        {events.length === 0 ? (
+          <div
+            style={{
+              background: "white",
+              border: "1px solid #e5e7eb",
+              borderRadius: 16,
+              padding: 18,
+              boxShadow: "0 6px 18px rgba(0,0,0,0.03)",
+            }}
+          >
+            <div style={{ fontSize: 18, fontWeight: 900 }}>
+              No hay partidos disponibles ahora mismo
+            </div>
+            <div style={{ marginTop: 8, color: "#666" }}>
+              Pulsa <b>Actualizar partidos</b> para traer los más recientes a la base
+              de datos.
+            </div>
           </div>
-        </div>
+        ) : (
+          <>
+            <div
+              style={{
+                background: "linear-gradient(135deg, #f8fafc 0%, #eef6ff 100%)",
+                border: "1px solid #e5e7eb",
+                borderRadius: 18,
+                padding: 20,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.04)",
+              }}
+            >
+              <h2 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>
+                ⭐ Apuestas recomendadas de hoy
+              </h2>
+              <p style={{ marginTop: 8, color: "#666", fontSize: 14 }}>
+                Estas son las opciones que el sistema considera más interesantes ahora mismo.
+              </p>
 
-        <div style={{ display: "grid", gap: 14 }}>
-          {events.map((event) => {
-            const isOpen = expandedEventId === event.id;
+              <div style={{ display: "grid", gap: 12, marginTop: 14 }}>
+                {recommended.map((offer) => (
+                  <div
+                    key={offer.id}
+                    style={{
+                      background: "white",
+                      border: "1px solid #eee",
+                      borderRadius: 14,
+                      padding: 14,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.03)",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 800, fontSize: 16 }}>
+                        {badge(offer.color)} {offer.event.home_team} vs {offer.event.away_team}
+                      </div>
 
-            return (
-              <div
-                key={event.id}
-                style={{
-                  background: "white",
-                  border: "1px solid #eee",
-                  borderRadius: 16,
-                  overflow: "hidden",
-                  boxShadow: "0 6px 18px rgba(0,0,0,0.03)",
-                }}
-              >
-                <button
-                  onClick={() => setExpandedEventId(isOpen ? null : event.id)}
-                  style={{
-                    width: "100%",
-                    background: "white",
-                    border: "none",
-                    padding: 16,
-                    cursor: "pointer",
-                    textAlign: "left",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 12, color: "#666" }}>
-                      {event.league} · {formatDate(event.start_time)}
+                      <div style={{ fontSize: 14, color: "#555", marginTop: 6 }}>
+                        {offer.label}
+                      </div>
+
+                      <div style={{ fontSize: 13, color: "#777", marginTop: 6 }}>
+                        Cuota {offer.odds.toFixed(2)} · Probabilidad estimada{" "}
+                        {(offer.probability * 100).toFixed(1)}%
+                      </div>
+
+                      <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>
+                        {sportLabel(offer.event.sport)} · {offer.event.league} ·{" "}
+                        {formatDate(offer.event.start_time)}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 20, fontWeight: 900, marginTop: 4 }}>
-                      {event.home_team} vs {event.away_team}
+
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        style={buttonStyleSecondary}
+                        onClick={() => addToCombo(offer.event, offer)}
+                      >
+                        Añadir a combinada
+                      </button>
+                      <button
+                        style={buttonStylePrimary}
+                        onClick={() => openBetModal(offer.event, offer)}
+                      >
+                        Apostar
+                      </button>
                     </div>
                   </div>
+                ))}
+              </div>
+            </div>
 
-                  <div style={{ fontSize: 22 }}>{isOpen ? "−" : "+"}</div>
-                </button>
+            <div style={{ display: "grid", gap: 14 }}>
+              {events.map((event) => {
+                const isOpen = expandedEventId === event.id;
 
-                {isOpen && (
-                  <div style={{ padding: "0 16px 16px 16px", display: "grid", gap: 10 }}>
-                    {event.offers.length === 0 ? (
-                      <div style={{ color: "#666" }}>
-                        Este partido aún no tiene opciones cargadas.
-                      </div>
-                    ) : (
-                      event.offers.map((offer) => (
-                        <div
-                          key={offer.id}
-                          style={{
-                            border: "1px solid #eee",
-                            borderRadius: 12,
-                            padding: 12,
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            gap: 12,
-                            background:
-                              offer.color === "green"
-                                ? "#f0fdf4"
-                                : offer.color === "orange"
-                                ? "#fff7ed"
-                                : offer.color === "red"
-                                ? "#fef2f2"
-                                : "#fafafa",
-                          }}
-                        >
-                          <div>
-                            <div style={{ fontWeight: 800 }}>
-                              {badge(offer.color)} {offer.label}
-                            </div>
-
-                            <div style={{ fontSize: 13, color: "#666", marginTop: 6 }}>
-                              Nivel: {colorName(offer.color)} · Cuota {offer.odds.toFixed(2)} ·
-                              Probabilidad {(offer.probability * 100).toFixed(1)}%
-                            </div>
-
-                            <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
-                              {offer.bookmaker ? `Casa ${offer.bookmaker}` : "Casa no disponible"}
-                            </div>
-                          </div>
-
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <button
-                              style={buttonStyleSecondary}
-                              onClick={() => addToCombo(event, offer)}
-                            >
-                              Añadir a combinada
-                            </button>
-
-                            <button
-                              style={buttonStyleSecondary}
-                              onClick={() => openBetModal(event, offer)}
-                            >
-                              Apostar
-                            </button>
-                          </div>
+                return (
+                  <div
+                    key={event.id}
+                    style={{
+                      background: "white",
+                      border: "1px solid #eee",
+                      borderRadius: 16,
+                      overflow: "hidden",
+                      boxShadow: "0 6px 18px rgba(0,0,0,0.03)",
+                    }}
+                  >
+                    <button
+                      onClick={() => setExpandedEventId(isOpen ? null : event.id)}
+                      style={{
+                        width: "100%",
+                        background: "white",
+                        border: "none",
+                        padding: 16,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: 12, color: "#666" }}>
+                          {event.league} · {formatDate(event.start_time)}
                         </div>
-                      ))
+                        <div style={{ fontSize: 20, fontWeight: 900, marginTop: 4 }}>
+                          {event.home_team} vs {event.away_team}
+                        </div>
+                      </div>
+
+                      <div style={{ fontSize: 22 }}>{isOpen ? "−" : "+"}</div>
+                    </button>
+
+                    {isOpen && (
+                      <div style={{ padding: "0 16px 16px 16px", display: "grid", gap: 10 }}>
+                        {event.offers.length === 0 ? (
+                          <div style={{ color: "#666" }}>
+                            Este partido aún no tiene opciones cargadas.
+                          </div>
+                        ) : (
+                          event.offers.map((offer) => (
+                            <div
+                              key={offer.id}
+                              style={{
+                                border: "1px solid #eee",
+                                borderRadius: 12,
+                                padding: 12,
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                gap: 12,
+                                background:
+                                  offer.color === "green"
+                                    ? "#f0fdf4"
+                                    : offer.color === "orange"
+                                    ? "#fff7ed"
+                                    : offer.color === "red"
+                                    ? "#fef2f2"
+                                    : "#fafafa",
+                              }}
+                            >
+                              <div>
+                                <div style={{ fontWeight: 800 }}>
+                                  {badge(offer.color)} {offer.label}
+                                </div>
+
+                                <div style={{ fontSize: 13, color: "#666", marginTop: 6 }}>
+                                  Nivel: {colorName(offer.color)} · Cuota {offer.odds.toFixed(2)} ·
+                                  Probabilidad {(offer.probability * 100).toFixed(1)}%
+                                </div>
+
+                                <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
+                                  {offer.bookmaker ? `Casa ${offer.bookmaker}` : "Casa no disponible"}
+                                </div>
+                              </div>
+
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button
+                                  style={buttonStyleSecondary}
+                                  onClick={() => addToCombo(event, offer)}
+                                >
+                                  Añadir a combinada
+                                </button>
+
+                                <button
+                                  style={buttonStyleSecondary}
+                                  onClick={() => openBetModal(event, offer)}
+                                >
+                                  Apostar
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
 
       {selectedEvent && selectedOffer && (
