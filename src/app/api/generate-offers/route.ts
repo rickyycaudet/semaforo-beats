@@ -1,378 +1,367 @@
-import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+"use client";
 
-type OddsOutcome = {
-  name: string;
-  price: number;
-};
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
 
-type OddsMarket = {
-  key: string;
-  outcomes: OddsOutcome[];
-};
-
-type OddsBookmaker = {
-  key: string;
-  title: string;
-  markets: OddsMarket[];
-};
-
-type OddsEvent = {
+type BetRow = {
   id: string;
-  sport_key: string;
-  sport_title: string;
-  commence_time: string;
-  home_team?: string;
-  away_team?: string;
-  bookmakers?: OddsBookmaker[];
-};
-
-type DailyEventRow = {
-  id: string;
-  provider_event_id: string;
-  provider_sport_key?: string | null;
-  sport: string;
-  league: string;
-  home_team: string;
-  away_team: string;
-  start_time: string;
-};
-
-type OfferInsert = {
-  event_id: string;
+  stake: number;
+  profit: number;
+  status: "pending" | "won" | "lost" | "void";
   color: "green" | "orange" | "red";
-  market_key: string;
-  label: string;
-  odds: number;
-  probability: number;
-  bookmaker: string | null;
-  market_probability: number;
-  model_probability: number;
-  edge: number;
-  risk_score: number;
-  confidence_score: number;
-  final_score: number;
-  reason_text: string;
+  market_key: string | null;
 };
 
-function impliedProb(decimalOdds: number) {
-  if (!decimalOdds || decimalOdds <= 1) return 0;
-  return 1 / decimalOdds;
+function porcentaje(n: number) {
+  return `${(n * 100).toFixed(1)}%`;
 }
 
-function normalizeNoVig(outcomes: OddsOutcome[]) {
-  const implied = outcomes.map((o) => ({
-    name: o.name,
-    price: o.price,
-    p: impliedProb(o.price),
-  }));
-
-  const sum = implied.reduce((acc, x) => acc + x.p, 0);
-
-  if (!sum) {
-    return implied.map((x) => ({
-      name: x.name,
-      price: x.price,
-      probability: 0,
-    }));
-  }
-
-  return implied.map((x) => ({
-    name: x.name,
-    price: x.price,
-    probability: x.p / sum,
-  }));
+function marketLabel(marketKey: string | null) {
+  if (!marketKey) return "Sin mercado";
+  if (marketKey === "h2h") return "Ganador del partido";
+  if (marketKey === "totals") return "Más / menos goles";
+  if (marketKey === "btts") return "Ambos marcan";
+  return marketKey;
 }
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
+export default function EstadisticasClient() {
+  const [loading, setLoading] = useState(true);
+  const [bets, setBets] = useState<BetRow[]>([]);
 
-function getRiskScore(probability: number, odds: number) {
-  let risk = 0.5;
+  async function load() {
+    setLoading(true);
 
-  if (probability >= 0.7) risk -= 0.18;
-  else if (probability >= 0.55) risk -= 0.05;
-  else if (probability < 0.4) risk += 0.2;
+    const { data, error } = await supabase
+      .from("bets")
+      .select("id, stake, profit, status, color, market_key");
 
-  if (odds >= 3) risk += 0.2;
-  else if (odds >= 2) risk += 0.08;
-  else if (odds <= 1.4) risk -= 0.08;
-
-  return clamp(risk, 0, 1);
-}
-
-function buildModelProbability(args: {
-  probability: number;
-  odds: number;
-  label: string;
-  sport: string;
-  event: DailyEventRow;
-}) {
-  const { probability, odds, label, sport, event } = args;
-
-  let model = probability;
-  const reasons: string[] = [];
-  let confidence = 0.55;
-
-  const normalizedLabel = (label || "").toLowerCase();
-
-  if (sport === "soccer") {
-    if (normalizedLabel.includes(event.home_team.toLowerCase())) {
-      model += 0.03;
-      reasons.push("ligera ventaja al equipo local");
-      confidence += 0.08;
+    if (error) {
+      alert("Error cargando estadísticas: " + error.message);
+      setLoading(false);
+      return;
     }
 
-    if (normalizedLabel === "draw" || normalizedLabel === "empate") {
-      model -= 0.03;
-      reasons.push("el empate suele ser menos estable");
-      confidence -= 0.04;
-    }
-
-    if (odds <= 1.55) {
-      model += 0.02;
-      reasons.push("favorito claro");
-      confidence += 0.06;
-    }
-
-    if (odds >= 3.0) {
-      model -= 0.03;
-      reasons.push("cuota alta implica mayor riesgo");
-      confidence -= 0.06;
-    }
+    setBets((data ?? []) as BetRow[]);
+    setLoading(false);
   }
 
-  if (sport === "tennis") {
-    if (odds <= 1.5) {
-      model += 0.03;
-      reasons.push("favorito fuerte en tenis");
-      confidence += 0.08;
-    }
+  useEffect(() => {
+    load();
+  }, []);
 
-    if (odds >= 2.5) {
-      model -= 0.03;
-      reasons.push("pick agresivo en tenis");
-      confidence -= 0.05;
-    }
-  }
+  const stats = useMemo(() => {
+    const resueltas = bets.filter((b) => b.status === "won" || b.status === "lost");
+    const ganadas = resueltas.filter((b) => b.status === "won");
+    const perdidas = resueltas.filter((b) => b.status === "lost");
 
-  model = clamp(model, 0.02, 0.95);
-  confidence = clamp(confidence, 0, 1);
+    const gananciaTotal = resueltas.reduce((acc, b) => acc + Number(b.profit ?? 0), 0);
+    const cantidadTotalApostada = resueltas.reduce((acc, b) => acc + Number(b.stake ?? 0), 0);
 
-  return {
-    modelProbability: model,
-    confidenceScore: confidence,
-    reasonText: reasons.length > 0 ? reasons.join(", ") : "selección estándar del sistema",
-  };
-}
+    const porcentajeAcierto = resueltas.length > 0 ? ganadas.length / resueltas.length : 0;
+    const rentabilidad = cantidadTotalApostada > 0 ? gananciaTotal / cantidadTotalApostada : 0;
 
-export async function GET() {
-  const oddsApiKey = process.env.ODDS_API_KEY;
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!oddsApiKey) {
-    return NextResponse.json({ error: "Falta ODDS_API_KEY" }, { status: 500 });
-  }
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return NextResponse.json(
-      { error: "Faltan variables de Supabase" },
-      { status: 500 }
-    );
-  }
-
-  const supabase = createClient(supabaseUrl, serviceRoleKey);
-
-  try {
-    const { data: dailyEvents, error: eventsErr } = await supabase
-      .from("daily_events")
-      .select("id, provider_event_id, provider_sport_key, sport, league, home_team, away_team, start_time")
-      .order("start_time", { ascending: true });
-
-    if (eventsErr) {
-      return NextResponse.json(
-        { error: "Error leyendo daily_events", details: eventsErr.message },
-        { status: 500 }
-      );
-    }
-
-    const events = (dailyEvents ?? []) as DailyEventRow[];
-
-    if (events.length === 0) {
-      return NextResponse.json({
-        ok: true,
-        inserted: 0,
-        message: "No hay partidos en daily_events",
-      });
-    }
-
-    const url =
-      "https://api.the-odds-api.com/v4/sports/upcoming/odds" +
-      "?apiKey=" + oddsApiKey +
-      "&regions=eu" +
-      "&markets=h2h" +
-      "&oddsFormat=decimal" +
-      "&dateFormat=iso";
-
-    const res = await fetch(url, { method: "GET", cache: "no-store" });
-
-    if (!res.ok) {
-      const txt = await res.text();
-      return NextResponse.json(
-        { error: "Error The Odds API", details: txt },
-        { status: 500 }
-      );
-    }
-
-    const oddsEvents = (await res.json()) as OddsEvent[];
-
-    const offersToInsert: OfferInsert[] = [];
-
-    for (const event of events) {
-      const oddsEvent = oddsEvents.find((oe) => oe.id === event.provider_event_id);
-
-      if (!oddsEvent || !oddsEvent.bookmakers || oddsEvent.bookmakers.length === 0) {
-        continue;
+    const porMercadoMap: Record<
+      string,
+      {
+        mercado: string;
+        total: number;
+        resueltas: number;
+        ganadas: number;
+        perdidas: number;
+        dineroApostado: number;
+        ganancia: number;
+        acierto: number;
+        rentabilidad: number;
       }
+    > = {};
 
-      const bestByOutcome: Record<
-        string,
-        {
-          label: string;
-          odds: number;
-          probability: number;
-          bookmaker: string;
-        }
-      > = {};
-
-      for (const bookmaker of oddsEvent.bookmakers) {
-        const h2hMarket = bookmaker.markets?.find((m) => m.key === "h2h");
-
-        if (!h2hMarket || !h2hMarket.outcomes || h2hMarket.outcomes.length < 2) {
-          continue;
-        }
-
-        const fairOutcomes = normalizeNoVig(h2hMarket.outcomes);
-
-        for (const outcome of fairOutcomes) {
-          const existing = bestByOutcome[outcome.name];
-
-          if (!existing || outcome.price > existing.odds) {
-            bestByOutcome[outcome.name] = {
-              label: outcome.name,
-              odds: outcome.price,
-              probability: outcome.probability,
-              bookmaker: bookmaker.title,
-            };
-          }
-        }
+    const porColorMap: Record<
+      string,
+      {
+        color: string;
+        total: number;
+        resueltas: number;
+        ganadas: number;
+        perdidas: number;
+        dineroApostado: number;
+        ganancia: number;
+        acierto: number;
+        rentabilidad: number;
       }
+    > = {};
 
-      const enriched = Object.values(bestByOutcome).map((pick) => {
-        const marketProbability = pick.probability;
-
-        const modelData = buildModelProbability({
-          probability: marketProbability,
-          odds: pick.odds,
-          label: pick.label,
-          sport: event.sport,
-          event,
-        });
-
-        const edge = modelData.modelProbability - marketProbability;
-        const riskScore = getRiskScore(modelData.modelProbability, pick.odds);
-
-        const finalScore =
-          edge * 100 +
-          modelData.confidenceScore * 10 -
-          riskScore * 8;
-
-        return {
-          ...pick,
-          marketProbability,
-          modelProbability: modelData.modelProbability,
-          edge,
-          riskScore,
-          confidenceScore: modelData.confidenceScore,
-          finalScore,
-          reasonText: modelData.reasonText,
+    for (const bet of bets) {
+      const mercado = marketLabel(bet.market_key);
+      if (!porMercadoMap[mercado]) {
+        porMercadoMap[mercado] = {
+          mercado,
+          total: 0,
+          resueltas: 0,
+          ganadas: 0,
+          perdidas: 0,
+          dineroApostado: 0,
+          ganancia: 0,
+          acierto: 0,
+          rentabilidad: 0,
         };
-      });
+      }
 
-      const ranked = enriched.sort((a, b) => b.finalScore - a.finalScore);
+      porMercadoMap[mercado].total += 1;
 
-      if (ranked.length < 2) continue;
+      if (bet.status === "won" || bet.status === "lost") {
+        porMercadoMap[mercado].resueltas += 1;
+        porMercadoMap[mercado].dineroApostado += Number(bet.stake ?? 0);
+        porMercadoMap[mercado].ganancia += Number(bet.profit ?? 0);
 
-      const colors: Array<"green" | "orange" | "red"> = ["green", "orange", "red"];
+        if (bet.status === "won") porMercadoMap[mercado].ganadas += 1;
+        if (bet.status === "lost") porMercadoMap[mercado].perdidas += 1;
+      }
 
-      ranked.slice(0, 3).forEach((pick, index) => {
-        offersToInsert.push({
-          event_id: event.id,
-          color: colors[index],
-          market_key: "h2h",
-          label: pick.label,
-          odds: pick.odds,
-          probability: pick.modelProbability,
-          bookmaker: pick.bookmaker,
-          market_probability: pick.marketProbability,
-          model_probability: pick.modelProbability,
-          edge: pick.edge,
-          risk_score: pick.riskScore,
-          confidence_score: pick.confidenceScore,
-          final_score: pick.finalScore,
-          reason_text: pick.reasonText,
-        });
-      });
+      const color = bet.color;
+      if (!porColorMap[color]) {
+        porColorMap[color] = {
+          color,
+          total: 0,
+          resueltas: 0,
+          ganadas: 0,
+          perdidas: 0,
+          dineroApostado: 0,
+          ganancia: 0,
+          acierto: 0,
+          rentabilidad: 0,
+        };
+      }
+
+      porColorMap[color].total += 1;
+
+      if (bet.status === "won" || bet.status === "lost") {
+        porColorMap[color].resueltas += 1;
+        porColorMap[color].dineroApostado += Number(bet.stake ?? 0);
+        porColorMap[color].ganancia += Number(bet.profit ?? 0);
+
+        if (bet.status === "won") porColorMap[color].ganadas += 1;
+        if (bet.status === "lost") porColorMap[color].perdidas += 1;
+      }
     }
 
-    if (offersToInsert.length === 0) {
-      return NextResponse.json({
-        ok: true,
-        inserted: 0,
-        message: "No se pudieron generar ofertas",
-      });
-    }
+    const porMercado = Object.values(porMercadoMap)
+      .map((m) => ({
+        ...m,
+        acierto: m.resueltas > 0 ? m.ganadas / m.resueltas : 0,
+        rentabilidad: m.dineroApostado > 0 ? m.ganancia / m.dineroApostado : 0,
+      }))
+      .sort((a, b) => b.ganancia - a.ganancia);
 
-    const eventIdsMap: Record<string, boolean> = {};
-    for (const offer of offersToInsert) {
-      eventIdsMap[offer.event_id] = true;
-    }
-    const eventIds = Object.keys(eventIdsMap);
+    const porColor = Object.values(porColorMap)
+      .map((c) => ({
+        ...c,
+        acierto: c.resueltas > 0 ? c.ganadas / c.resueltas : 0,
+        rentabilidad: c.dineroApostado > 0 ? c.ganancia / c.dineroApostado : 0,
+      }))
+      .sort((a, b) => b.ganancia - a.ganancia);
 
-    const { error: deleteErr } = await supabase
-      .from("daily_offers")
-      .delete()
-      .in("event_id", eventIds);
+    return {
+      totalApuestas: bets.length,
+      pendientes: bets.filter((b) => b.status === "pending").length,
+      resueltas: resueltas.length,
+      ganadas: ganadas.length,
+      perdidas: perdidas.length,
+      gananciaTotal,
+      cantidadTotalApostada,
+      porcentajeAcierto,
+      rentabilidad,
+      porMercado,
+      porColor,
+    };
+  }, [bets]);
 
-    if (deleteErr) {
-      return NextResponse.json(
-        { error: "Error borrando ofertas antiguas", details: deleteErr.message },
-        { status: 500 }
-      );
-    }
+  return (
+    <div style={{ display: "grid", gap: 18 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gap: 12,
+        }}
+      >
+        <Card
+          title="Ganancia / pérdida total"
+          value={loading ? "…" : `${stats.gananciaTotal.toFixed(2)}€`}
+          help="Lo que has ganado o perdido en apuestas ya resueltas."
+        />
+        <Card
+          title="Apuestas resueltas"
+          value={loading ? "…" : `${stats.resueltas}`}
+          help="Apuestas que ya terminaron."
+        />
+        <Card
+          title="Porcentaje de acierto"
+          value={loading ? "…" : porcentaje(stats.porcentajeAcierto)}
+          help="Cuántas apuestas aciertas de cada 100."
+        />
+        <Card
+          title="Rentabilidad"
+          value={loading ? "…" : porcentaje(stats.rentabilidad)}
+          help="Qué porcentaje ganas o pierdes respecto a lo apostado."
+        />
+      </div>
 
-    const { error: insertErr } = await supabase
-      .from("daily_offers")
-      .insert(offersToInsert);
+      <div
+        style={{
+          background: "white",
+          border: "1px solid #eee",
+          borderRadius: 16,
+          padding: 16,
+        }}
+      >
+        <h2 style={{ fontSize: 20, fontWeight: 900, margin: 0 }}>Resumen general</h2>
 
-    if (insertErr) {
-      return NextResponse.json(
-        { error: "Error insertando ofertas", details: insertErr.message },
-        { status: 500 }
-      );
-    }
+        {loading ? (
+          <div style={{ marginTop: 10 }}>Cargando…</div>
+        ) : (
+          <div style={{ marginTop: 12, color: "#333", lineHeight: 1.9 }}>
+            <div><b>Total de apuestas:</b> {stats.totalApuestas}</div>
+            <div><b>Apuestas pendientes:</b> {stats.pendientes}</div>
+            <div><b>Apuestas resueltas:</b> {stats.resueltas}</div>
+            <div><b>Apuestas ganadas:</b> {stats.ganadas}</div>
+            <div><b>Apuestas perdidas:</b> {stats.perdidas}</div>
+            <div><b>Dinero total apostado:</b> {stats.cantidadTotalApostada.toFixed(2)}€</div>
+          </div>
+        )}
+      </div>
 
-    return NextResponse.json({
-      ok: true,
-      inserted: offersToInsert.length,
-      sample: offersToInsert.slice(0, 6),
-    });
-  } catch (error: any) {
-    return NextResponse.json(
-      { error: error?.message ?? "Error desconocido" },
-      { status: 500 }
-    );
-  }
+      <div
+        style={{
+          background: "white",
+          border: "1px solid #eee",
+          borderRadius: 16,
+          padding: 16,
+        }}
+      >
+        <h2 style={{ fontSize: 20, fontWeight: 900, margin: 0 }}>Histórico por mercado</h2>
+        <p style={{ marginTop: 8, color: "#666" }}>
+          Aquí ves qué tipo de apuesta te está funcionando mejor.
+        </p>
+
+        {loading ? (
+          <div style={{ marginTop: 12 }}>Cargando…</div>
+        ) : stats.porMercado.length === 0 ? (
+          <div style={{ marginTop: 12, color: "#666" }}>
+            Aún no hay suficientes datos por mercado.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto", marginTop: 12 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
+                  <th style={{ padding: 10 }}>Mercado</th>
+                  <th style={{ padding: 10 }}>Resueltas</th>
+                  <th style={{ padding: 10 }}>Ganadas</th>
+                  <th style={{ padding: 10 }}>Perdidas</th>
+                  <th style={{ padding: 10 }}>Dinero apostado</th>
+                  <th style={{ padding: 10 }}>Ganancia / pérdida</th>
+                  <th style={{ padding: 10 }}>Acierto</th>
+                  <th style={{ padding: 10 }}>Rentabilidad</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.porMercado.map((row) => (
+                  <tr key={row.mercado} style={{ borderBottom: "1px solid #f2f2f2" }}>
+                    <td style={{ padding: 10, fontWeight: 700 }}>{row.mercado}</td>
+                    <td style={{ padding: 10 }}>{row.resueltas}</td>
+                    <td style={{ padding: 10 }}>{row.ganadas}</td>
+                    <td style={{ padding: 10 }}>{row.perdidas}</td>
+                    <td style={{ padding: 10 }}>{row.dineroApostado.toFixed(2)}€</td>
+                    <td style={{ padding: 10 }}>{row.ganancia.toFixed(2)}€</td>
+                    <td style={{ padding: 10 }}>{porcentaje(row.acierto)}</td>
+                    <td style={{ padding: 10 }}>{porcentaje(row.rentabilidad)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div
+        style={{
+          background: "white",
+          border: "1px solid #eee",
+          borderRadius: 16,
+          padding: 16,
+        }}
+      >
+        <h2 style={{ fontSize: 20, fontWeight: 900, margin: 0 }}>Histórico por color</h2>
+        <p style={{ marginTop: 8, color: "#666" }}>
+          Así ves si tus verdes, naranjas o rojas están funcionando de verdad.
+        </p>
+
+        {loading ? (
+          <div style={{ marginTop: 12 }}>Cargando…</div>
+        ) : stats.porColor.length === 0 ? (
+          <div style={{ marginTop: 12, color: "#666" }}>
+            Aún no hay suficientes datos por color.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto", marginTop: 12 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+              <thead>
+                <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
+                  <th style={{ padding: 10 }}>Color</th>
+                  <th style={{ padding: 10 }}>Resueltas</th>
+                  <th style={{ padding: 10 }}>Ganadas</th>
+                  <th style={{ padding: 10 }}>Perdidas</th>
+                  <th style={{ padding: 10 }}>Dinero apostado</th>
+                  <th style={{ padding: 10 }}>Ganancia / pérdida</th>
+                  <th style={{ padding: 10 }}>Acierto</th>
+                  <th style={{ padding: 10 }}>Rentabilidad</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.porColor.map((row) => (
+                  <tr key={row.color} style={{ borderBottom: "1px solid #f2f2f2" }}>
+                    <td style={{ padding: 10, fontWeight: 700 }}>
+                      {row.color === "green" ? "🟢 Verde" : row.color === "orange" ? "🟠 Naranja" : "🔴 Rojo"}
+                    </td>
+                    <td style={{ padding: 10 }}>{row.resueltas}</td>
+                    <td style={{ padding: 10 }}>{row.ganadas}</td>
+                    <td style={{ padding: 10 }}>{row.perdidas}</td>
+                    <td style={{ padding: 10 }}>{row.dineroApostado.toFixed(2)}€</td>
+                    <td style={{ padding: 10 }}>{row.ganancia.toFixed(2)}€</td>
+                    <td style={{ padding: 10 }}>{porcentaje(row.acierto)}</td>
+                    <td style={{ padding: 10 }}>{porcentaje(row.rentabilidad)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Card({
+  title,
+  value,
+  help,
+}: {
+  title: string;
+  value: string;
+  help: string;
+}) {
+  return (
+    <div
+      style={{
+        background: "white",
+        border: "1px solid #eee",
+        borderRadius: 16,
+        padding: 16,
+      }}
+    >
+      <div style={{ fontSize: 12, color: "#666" }}>{title}</div>
+      <div style={{ fontSize: 24, fontWeight: 900, marginTop: 4 }}>{value}</div>
+      <div style={{ fontSize: 12, color: "#777", marginTop: 6 }}>{help}</div>
+    </div>
+  );
 }
