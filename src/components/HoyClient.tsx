@@ -57,6 +57,13 @@ function colorName(color: OfferRow["color"]) {
   return "Extra";
 }
 
+function marketLabel(marketKey: string) {
+  if (marketKey === "h2h") return "Ganador del partido";
+  if (marketKey === "totals") return "Goles";
+  if (marketKey === "btts") return "Ambos marcan";
+  return marketKey;
+}
+
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
   return d.toLocaleString("es-ES", {
@@ -104,6 +111,7 @@ function strategyDescription(strategy: StrategyKey) {
 export default function HoyClient() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [onlyPremium, setOnlyPremium] = useState(false);
   const [events, setEvents] = useState<EventWithOffers[]>([]);
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
 
@@ -119,12 +127,30 @@ export default function HoyClient() {
 
   const availableBalance = useMemo(() => bankrollInitial + ledgerSum, [bankrollInitial, ledgerSum]);
 
+  function isPremiumOffer(offer: OfferRow) {
+    return (
+      Number(offer.edge ?? 0) >= 0.025 &&
+      Number(offer.confidence_score ?? 0) >= 0.6 &&
+      Number(offer.risk_score ?? 1) <= 0.55 &&
+      Number(offer.odds ?? 0) >= 1.3
+    );
+  }
+
   async function loadBalance() {
-    const { data: settings } = await supabase.from("user_settings").select("bankroll_initial").single();
-    const { data: ledgerRows } = await supabase.from("ledger").select("amount");
+    const { data: settings } = await supabase
+      .from("user_settings")
+      .select("bankroll_initial")
+      .single();
+
+    const { data: ledgerRows } = await supabase
+      .from("ledger")
+      .select("amount");
 
     const initial = Number(settings?.bankroll_initial ?? 0);
-    const sum = (ledgerRows ?? []).reduce((acc, row: any) => acc + Number(row.amount ?? 0), 0);
+    const sum = (ledgerRows ?? []).reduce(
+      (acc, row: any) => acc + Number(row.amount ?? 0),
+      0
+    );
 
     setBankrollInitial(initial);
     setLedgerSum(sum);
@@ -154,15 +180,28 @@ export default function HoyClient() {
 
     const merged: EventWithOffers[] = (eventsData ?? [])
       .filter((e: any) => new Date(e.start_time) > now)
-      .map((event: any) => ({
-        ...event,
-        offers: (offersData ?? []).filter((o: any) => o.event_id === event.id),
-      }));
+      .map((event: any) => {
+        let offers = (offersData ?? []).filter((o: any) => o.event_id === event.id);
+
+        if (onlyPremium) {
+          offers = offers.filter((o: any) => isPremiumOffer(o));
+        }
+
+        offers = offers.sort(
+          (a: any, b: any) => Number(b.final_score ?? 0) - Number(a.final_score ?? 0)
+        );
+
+        return {
+          ...event,
+          offers,
+        };
+      })
+      .filter((event) => event.offers.length > 0 || !onlyPremium);
 
     setEvents(merged);
 
-    if (merged.length > 0 && !expandedEventId) {
-      setExpandedEventId(merged[0].id);
+    if (merged.length > 0) {
+      setExpandedEventId((prev) => prev ?? merged[0].id);
     }
   }
 
@@ -181,7 +220,7 @@ export default function HoyClient() {
 
   useEffect(() => {
     loadAll();
-  }, []);
+  }, [onlyPremium]);
 
   async function refreshMatches() {
     setRefreshing(true);
@@ -191,7 +230,10 @@ export default function HoyClient() {
       const importData = await importRes.json();
 
       if (!importRes.ok) {
-        alert("Error actualizando partidos: " + (importData?.details || importData?.error || "Error desconocido"));
+        alert(
+          "Error actualizando partidos: " +
+            (importData?.details || importData?.error || "Error desconocido")
+        );
         setRefreshing(false);
         return;
       }
@@ -200,7 +242,10 @@ export default function HoyClient() {
       const offersData = await offersRes.json();
 
       if (!offersRes.ok) {
-        alert("Los partidos se actualizaron, pero falló la generación de apuestas: " + (offersData?.details || offersData?.error || "Error desconocido"));
+        alert(
+          "Los partidos se actualizaron, pero falló la generación de apuestas: " +
+            (offersData?.details || offersData?.error || "Error desconocido")
+        );
         setRefreshing(false);
         return;
       }
@@ -239,8 +284,11 @@ export default function HoyClient() {
 
   function addToCombo(event: EventWithOffers, offer: OfferRow) {
     const pickId = `${event.id}-${offer.id}`;
+
     setComboPicks((prev) => {
-      if (prev.some((p) => p.id === pickId)) return prev;
+      const alreadyExists = prev.some((p) => p.id === pickId);
+      if (alreadyExists) return prev;
+
       return [
         ...prev,
         {
@@ -266,17 +314,36 @@ export default function HoyClient() {
     if (!selectedEvent || !selectedOffer) return;
 
     const amount = Number(String(betAmount).replace(",", "."));
-    if (!Number.isFinite(amount) || amount <= 0) return alert("La cantidad apostada no es válida.");
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      alert("La cantidad apostada no es válida.");
+      return;
+    }
 
     const maxAllowed = availableBalance * 0.1;
-    if (amount > maxAllowed) return alert(`No puedes apostar más del 10% de tu saldo.\nMáximo permitido ahora: ${maxAllowed.toFixed(2)}€`);
-    if (amount > availableBalance) return alert("No tienes suficiente saldo disponible.");
+
+    if (amount > maxAllowed) {
+      alert(
+        `No puedes apostar más del 10% de tu saldo.\nMáximo permitido ahora: ${maxAllowed.toFixed(2)}€`
+      );
+      return;
+    }
+
+    if (amount > availableBalance) {
+      alert("No tienes suficiente saldo disponible.");
+      return;
+    }
 
     const { data: userData } = await supabase.auth.getUser();
     const user = userData?.user;
-    if (!user) return alert("No hay sesión iniciada.");
 
-    const colorToSave = selectedOffer.color === "extra" ? "orange" : selectedOffer.color;
+    if (!user) {
+      alert("No hay sesión iniciada.");
+      return;
+    }
+
+    const colorToSave =
+      selectedOffer.color === "extra" ? "orange" : selectedOffer.color;
 
     const { data: bet, error: betError } = await supabase
       .from("bets")
@@ -300,7 +367,10 @@ export default function HoyClient() {
       .select("id")
       .single();
 
-    if (betError) return alert("Error guardando la apuesta: " + betError.message);
+    if (betError) {
+      alert("Error guardando la apuesta: " + betError.message);
+      return;
+    }
 
     const { error: ledgerError } = await supabase.from("ledger").insert({
       user_id: user.id,
@@ -310,7 +380,11 @@ export default function HoyClient() {
     });
 
     if (ledgerError) {
-      return alert("La apuesta se guardó, pero hubo un error al descontar el saldo: " + ledgerError.message);
+      alert(
+        "La apuesta se guardó, pero hubo un error al descontar el saldo: " +
+          ledgerError.message
+      );
+      return;
     }
 
     alert("Apuesta guardada ✅");
@@ -318,77 +392,176 @@ export default function HoyClient() {
     window.location.reload();
   }
 
-  const allOffers: RecommendedOffer[] = events.flatMap((e) => e.offers.map((o) => ({ ...o, event: e })));
+  if (loading) {
+    return <div>Cargando partidos…</div>;
+  }
+
+  const allOffers: RecommendedOffer[] = events.flatMap((e) =>
+    e.offers.map((o) => ({
+      ...o,
+      event: e,
+    }))
+  );
 
   const recommended = allOffers
     .sort((a, b) => Number(b.final_score ?? 0) - Number(a.final_score ?? 0))
     .slice(0, 3);
 
-  const currentPercent = selectedOffer
-    ? Math.min(getStrategyPercent(selectedStrategy, selectedOffer.color), 0.1)
-    : 0;
+  const currentPercent =
+    selectedOffer
+      ? Math.min(getStrategyPercent(selectedStrategy, selectedOffer.color), 0.1)
+      : 0;
 
   return (
     <>
       <div style={{ display: "grid", gap: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
           <div>
             <div style={{ fontSize: 12, color: "#666" }}>Panel profesional</div>
-            <div style={{ fontSize: 24, fontWeight: 900 }}>Selección inteligente de apuestas</div>
+            <div style={{ fontSize: 24, fontWeight: 900 }}>
+              Selección inteligente de apuestas
+            </div>
           </div>
 
-          <button
-            onClick={refreshMatches}
-            disabled={refreshing}
-            style={{
-              padding: "12px 16px",
-              borderRadius: 12,
-              border: "1px solid #d1d5db",
-              background: "white",
-              cursor: refreshing ? "default" : "pointer",
-              fontWeight: 800,
-              opacity: refreshing ? 0.7 : 1,
-            }}
-          >
-            {refreshing ? "Actualizando..." : "Actualizar partidos"}
-          </button>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                background: "white",
+                border: "1px solid #d1d5db",
+                borderRadius: 12,
+                padding: "10px 12px",
+                fontWeight: 700,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={onlyPremium}
+                onChange={(e) => setOnlyPremium(e.target.checked)}
+              />
+              Solo premium
+            </label>
+
+            <button
+              onClick={refreshMatches}
+              disabled={refreshing}
+              style={{
+                padding: "12px 16px",
+                borderRadius: 12,
+                border: "1px solid #d1d5db",
+                background: "white",
+                cursor: refreshing ? "default" : "pointer",
+                fontWeight: 800,
+                opacity: refreshing ? 0.7 : 1,
+              }}
+            >
+              {refreshing ? "Actualizando..." : "Actualizar partidos"}
+            </button>
+          </div>
         </div>
 
-        <ComboBuilder picks={comboPicks} onRemovePick={removeFromCombo} onClear={clearCombo} />
+        <ComboBuilder
+          picks={comboPicks}
+          onRemovePick={removeFromCombo}
+          onClear={clearCombo}
+        />
 
         {events.length === 0 ? (
-          <div style={{ background: "white", border: "1px solid #e5e7eb", borderRadius: 16, padding: 18 }}>
-            No hay partidos disponibles ahora mismo.
+          <div
+            style={{
+              background: "white",
+              border: "1px solid #e5e7eb",
+              borderRadius: 16,
+              padding: 18,
+              boxShadow: "0 6px 18px rgba(0,0,0,0.03)",
+            }}
+          >
+            <div style={{ fontSize: 18, fontWeight: 900 }}>
+              No hay apuestas que cumplan el filtro actual
+            </div>
+            <div style={{ marginTop: 8, color: "#666" }}>
+              Prueba a quitar el modo <b>Solo premium</b> o pulsa <b>Actualizar partidos</b>.
+            </div>
           </div>
         ) : (
           <>
-            <div style={{ background: "linear-gradient(135deg, #f8fafc 0%, #eef6ff 100%)", border: "1px solid #e5e7eb", borderRadius: 18, padding: 20 }}>
-              <h2 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>⭐ Mejores apuestas del momento</h2>
+            <div
+              style={{
+                background: "linear-gradient(135deg, #f8fafc 0%, #eef6ff 100%)",
+                border: "1px solid #e5e7eb",
+                borderRadius: 18,
+                padding: 20,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.04)",
+              }}
+            >
+              <h2 style={{ fontSize: 22, fontWeight: 900, margin: 0 }}>
+                ⭐ Mejores apuestas del momento
+              </h2>
               <p style={{ marginTop: 8, color: "#666", fontSize: 14 }}>
-                Estas son las apuestas que el sistema considera más interesantes por valor y confianza.
+                Estas son las apuestas con mejor combinación de ventaja, confianza y riesgo.
               </p>
 
               <div style={{ display: "grid", gap: 12, marginTop: 14 }}>
                 {recommended.map((offer) => (
-                  <div key={offer.id} style={{ background: "white", border: "1px solid #eee", borderRadius: 14, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                  <div
+                    key={offer.id}
+                    style={{
+                      background: "white",
+                      border: "1px solid #eee",
+                      borderRadius: 14,
+                      padding: 14,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.03)",
+                    }}
+                  >
                     <div>
                       <div style={{ fontWeight: 800, fontSize: 16 }}>
                         {badge(offer.color)} {offer.event.home_team} vs {offer.event.away_team}
                       </div>
-                      <div style={{ fontSize: 14, color: "#555", marginTop: 6 }}>{offer.label}</div>
-                      <div style={{ fontSize: 13, color: "#777", marginTop: 6 }}>
-                        Cuota {offer.odds.toFixed(2)} · Ventaja {(Number(offer.edge ?? 0) * 100).toFixed(1)}% · Confianza {(Number(offer.confidence_score ?? 0) * 100).toFixed(0)}%
+
+                      <div style={{ fontSize: 14, color: "#555", marginTop: 6 }}>
+                        {offer.label}
                       </div>
+
+                      <div style={{ fontSize: 13, color: "#777", marginTop: 6 }}>
+                        {marketLabel(offer.market_key)} · Cuota {offer.odds.toFixed(2)} ·
+                        Ventaja {(Number(offer.edge ?? 0) * 100).toFixed(1)}%
+                      </div>
+
+                      <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+                        Confianza {(Number(offer.confidence_score ?? 0) * 100).toFixed(0)}% ·
+                        Riesgo {(Number(offer.risk_score ?? 0) * 100).toFixed(0)}%
+                      </div>
+
                       <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>
                         Motivo: {offer.reason_text || "Sin explicación"}
                       </div>
                     </div>
 
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <button style={buttonStyleSecondary} onClick={() => addToCombo(offer.event, offer)}>
+                      <button
+                        style={buttonStyleSecondary}
+                        onClick={() => addToCombo(offer.event, offer)}
+                      >
                         Añadir a combinada
                       </button>
-                      <button style={buttonStylePrimary} onClick={() => openBetModal(offer.event, offer)}>
+                      <button
+                        style={buttonStylePrimary}
+                        onClick={() => openBetModal(offer.event, offer)}
+                      >
                         Apostar
                       </button>
                     </div>
@@ -402,7 +575,16 @@ export default function HoyClient() {
                 const isOpen = expandedEventId === event.id;
 
                 return (
-                  <div key={event.id} style={{ background: "white", border: "1px solid #eee", borderRadius: 16, overflow: "hidden" }}>
+                  <div
+                    key={event.id}
+                    style={{
+                      background: "white",
+                      border: "1px solid #eee",
+                      borderRadius: 16,
+                      overflow: "hidden",
+                      boxShadow: "0 6px 18px rgba(0,0,0,0.03)",
+                    }}
+                  >
                     <button
                       onClick={() => setExpandedEventId(isOpen ? null : event.id)}
                       style={{
@@ -425,55 +607,74 @@ export default function HoyClient() {
                           {event.home_team} vs {event.away_team}
                         </div>
                       </div>
+
                       <div style={{ fontSize: 22 }}>{isOpen ? "−" : "+"}</div>
                     </button>
 
                     {isOpen && (
                       <div style={{ padding: "0 16px 16px 16px", display: "grid", gap: 10 }}>
-                        {event.offers.map((offer) => (
-                          <div
-                            key={offer.id}
-                            style={{
-                              border: "1px solid #eee",
-                              borderRadius: 12,
-                              padding: 12,
-                              display: "flex",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              gap: 12,
-                              background:
-                                offer.color === "green"
-                                  ? "#f0fdf4"
-                                  : offer.color === "orange"
-                                  ? "#fff7ed"
-                                  : "#fef2f2",
-                            }}
-                          >
-                            <div>
-                              <div style={{ fontWeight: 800 }}>
-                                {badge(offer.color)} {offer.label}
-                              </div>
-                              <div style={{ fontSize: 13, color: "#666", marginTop: 6 }}>
-                                {colorName(offer.color)} · Cuota {offer.odds.toFixed(2)}
-                              </div>
-                              <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
-                                Ventaja {(Number(offer.edge ?? 0) * 100).toFixed(1)}% · Confianza {(Number(offer.confidence_score ?? 0) * 100).toFixed(0)}% · Riesgo {(Number(offer.risk_score ?? 0) * 100).toFixed(0)}%
-                              </div>
-                              <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
-                                Motivo: {offer.reason_text || "Sin explicación"}
-                              </div>
-                            </div>
-
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                              <button style={buttonStyleSecondary} onClick={() => addToCombo(event, offer)}>
-                                Añadir a combinada
-                              </button>
-                              <button style={buttonStyleSecondary} onClick={() => openBetModal(event, offer)}>
-                                Apostar
-                              </button>
-                            </div>
+                        {event.offers.length === 0 ? (
+                          <div style={{ color: "#666" }}>
+                            Este partido no tiene apuestas válidas con el filtro actual.
                           </div>
-                        ))}
+                        ) : (
+                          event.offers.map((offer) => (
+                            <div
+                              key={offer.id}
+                              style={{
+                                border: "1px solid #eee",
+                                borderRadius: 12,
+                                padding: 12,
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                gap: 12,
+                                background:
+                                  offer.color === "green"
+                                    ? "#f0fdf4"
+                                    : offer.color === "orange"
+                                    ? "#fff7ed"
+                                    : "#fef2f2",
+                              }}
+                            >
+                              <div>
+                                <div style={{ fontWeight: 800 }}>
+                                  {badge(offer.color)} {offer.label}
+                                </div>
+
+                                <div style={{ fontSize: 13, color: "#666", marginTop: 6 }}>
+                                  {colorName(offer.color)} · {marketLabel(offer.market_key)} · Cuota {offer.odds.toFixed(2)}
+                                </div>
+
+                                <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
+                                  Ventaja {(Number(offer.edge ?? 0) * 100).toFixed(1)}% ·
+                                  Confianza {(Number(offer.confidence_score ?? 0) * 100).toFixed(0)}% ·
+                                  Riesgo {(Number(offer.risk_score ?? 0) * 100).toFixed(0)}%
+                                </div>
+
+                                <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>
+                                  Motivo: {offer.reason_text || "Sin explicación"}
+                                </div>
+                              </div>
+
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button
+                                  style={buttonStyleSecondary}
+                                  onClick={() => addToCombo(event, offer)}
+                                >
+                                  Añadir a combinada
+                                </button>
+
+                                <button
+                                  style={buttonStyleSecondary}
+                                  onClick={() => openBetModal(event, offer)}
+                                >
+                                  Apostar
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
                     )}
                   </div>
@@ -496,67 +697,114 @@ export default function HoyClient() {
                   {selectedEvent.home_team} vs {selectedEvent.away_team}
                 </h3>
               </div>
-              <button onClick={closeBetModal} style={closeButtonStyle}>✕</button>
+
+              <button onClick={closeBetModal} style={closeButtonStyle}>
+                ✕
+              </button>
             </div>
 
-            <div style={{ marginTop: 16, padding: 14, borderRadius: 14, background: "#f8fafc", border: "1px solid #e5e7eb" }}>
+            <div
+              style={{
+                marginTop: 16,
+                padding: 14,
+                borderRadius: 14,
+                background: "#f8fafc",
+                border: "1px solid #e5e7eb",
+              }}
+            >
               <div style={{ fontWeight: 800 }}>
                 {badge(selectedOffer.color)} {selectedOffer.label}
               </div>
+
               <div style={{ fontSize: 14, color: "#555", marginTop: 8 }}>
                 Cuota: <b>{selectedOffer.odds.toFixed(2)}</b>
               </div>
+
               <div style={{ fontSize: 14, color: "#555", marginTop: 6 }}>
                 Ventaja estimada: <b>{(Number(selectedOffer.edge ?? 0) * 100).toFixed(1)}%</b>
               </div>
+
               <div style={{ fontSize: 13, color: "#666", marginTop: 6 }}>
+                Confianza: <b>{(Number(selectedOffer.confidence_score ?? 0) * 100).toFixed(0)}%</b> ·
+                Riesgo: <b>{(Number(selectedOffer.risk_score ?? 0) * 100).toFixed(0)}%</b>
+              </div>
+
+              <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>
                 Motivo: {selectedOffer.reason_text || "Sin explicación"}
               </div>
             </div>
 
             <div style={{ marginTop: 16 }}>
-              <div style={{ fontWeight: 800, marginBottom: 10 }}>Estrategia de apuesta</div>
-              <div style={{ display: "grid", gap: 10 }}>
-                {(["auto", "safe", "balanced", "aggressive"] as StrategyKey[]).map((strategy) => {
-                  const pct = Math.min(getStrategyPercent(strategy, selectedOffer.color), 0.1);
-                  const euros = availableBalance * pct;
-                  const active = selectedStrategy === strategy;
+              <div style={{ fontWeight: 800, marginBottom: 10 }}>
+                Estrategia de apuesta
+              </div>
 
-                  return (
-                    <button
-                      key={strategy}
-                      onClick={() => applyStrategy(strategy, selectedOffer)}
-                      style={{
-                        textAlign: "left",
-                        borderRadius: 12,
-                        border: active ? "2px solid #111827" : "1px solid #ddd",
-                        background: active ? "#f9fafb" : "white",
-                        padding: 12,
-                        cursor: "pointer",
-                      }}
-                    >
-                      <div style={{ fontWeight: 800 }}>
-                        {strategyLabel(strategy)} · {(pct * 100).toFixed(1)}%
-                      </div>
-                      <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
-                        {strategyDescription(strategy)}
-                      </div>
-                      <div style={{ fontSize: 13, color: "#444", marginTop: 6 }}>
-                        Cantidad sugerida: <b>{euros.toFixed(2)}€</b>
-                      </div>
-                    </button>
-                  );
-                })}
+              <div style={{ display: "grid", gap: 10 }}>
+                {(["auto", "safe", "balanced", "aggressive"] as StrategyKey[]).map(
+                  (strategy) => {
+                    const pct = Math.min(
+                      getStrategyPercent(strategy, selectedOffer.color),
+                      0.1
+                    );
+                    const euros = availableBalance * pct;
+                    const active = selectedStrategy === strategy;
+
+                    return (
+                      <button
+                        key={strategy}
+                        onClick={() => applyStrategy(strategy, selectedOffer)}
+                        style={{
+                          textAlign: "left",
+                          borderRadius: 12,
+                          border: active ? "2px solid #111827" : "1px solid #ddd",
+                          background: active ? "#f9fafb" : "white",
+                          padding: 12,
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div style={{ fontWeight: 800 }}>
+                          {strategyLabel(strategy)} · {(pct * 100).toFixed(1)}%
+                        </div>
+                        <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
+                          {strategyDescription(strategy)}
+                        </div>
+                        <div style={{ fontSize: 13, color: "#444", marginTop: 6 }}>
+                          Cantidad sugerida: <b>{euros.toFixed(2)}€</b>
+                        </div>
+                      </button>
+                    );
+                  }
+                )}
               </div>
             </div>
 
             <div style={{ marginTop: 16 }}>
-              <div style={{ fontWeight: 800, marginBottom: 8 }}>Recomendación actual</div>
-              <div style={{ display: "grid", gap: 8, background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-                <div>Saldo disponible: <b>{availableBalance.toFixed(2)}€</b></div>
-                <div>Porcentaje recomendado: <b>{(currentPercent * 100).toFixed(1)}%</b></div>
-                <div>Cantidad recomendada: <b>{(availableBalance * currentPercent).toFixed(2)}€</b></div>
-                <div>Máximo permitido ahora (10%): <b>{(availableBalance * 0.1).toFixed(2)}€</b></div>
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>
+                Recomendación actual
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gap: 8,
+                  background: "#fff",
+                  border: "1px solid #eee",
+                  borderRadius: 12,
+                  padding: 12,
+                }}
+              >
+                <div>
+                  Saldo disponible: <b>{availableBalance.toFixed(2)}€</b>
+                </div>
+                <div>
+                  Porcentaje recomendado: <b>{(currentPercent * 100).toFixed(1)}%</b>
+                </div>
+                <div>
+                  Cantidad recomendada: <b>{(availableBalance * currentPercent).toFixed(2)}€</b>
+                </div>
+                <div>
+                  Máximo permitido ahora (10%): <b>{(availableBalance * 0.1).toFixed(2)}€</b>
+                </div>
               </div>
             </div>
 
@@ -564,6 +812,7 @@ export default function HoyClient() {
               <label style={{ display: "block", fontWeight: 800, marginBottom: 8 }}>
                 Cantidad que quieres apostar (€)
               </label>
+
               <input
                 type="number"
                 step="0.01"
@@ -573,7 +822,17 @@ export default function HoyClient() {
               />
             </div>
 
-            <div style={{ marginTop: 16, padding: 12, borderRadius: 12, background: "#fafafa", border: "1px solid #eee", fontSize: 14, color: "#555" }}>
+            <div
+              style={{
+                marginTop: 16,
+                padding: 12,
+                borderRadius: 12,
+                background: "#fafafa",
+                border: "1px solid #eee",
+                fontSize: 14,
+                color: "#555",
+              }}
+            >
               Posible ganancia neta si aciertas:{" "}
               <b>
                 {(() => {
@@ -585,8 +844,12 @@ export default function HoyClient() {
             </div>
 
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-              <button style={buttonStyleSecondary} onClick={closeBetModal}>Cancelar</button>
-              <button style={buttonStylePrimary} onClick={confirmBet}>Confirmar apuesta</button>
+              <button style={buttonStyleSecondary} onClick={closeBetModal}>
+                Cancelar
+              </button>
+              <button style={buttonStylePrimary} onClick={confirmBet}>
+                Confirmar apuesta
+              </button>
             </div>
           </div>
         </div>
