@@ -30,6 +30,7 @@ type OddsEvent = {
 type DailyEventRow = {
   id: string;
   provider_event_id: string;
+  provider_sport_key?: string | null;
   sport: string;
   league: string;
   home_team: string;
@@ -45,6 +46,13 @@ type OfferInsert = {
   odds: number;
   probability: number;
   bookmaker: string | null;
+  market_probability: number;
+  model_probability: number;
+  edge: number;
+  risk_score: number;
+  confidence_score: number;
+  final_score: number;
+  reason_text: string;
 };
 
 function impliedProb(decimalOdds: number) {
@@ -76,6 +84,89 @@ function normalizeNoVig(outcomes: OddsOutcome[]) {
   }));
 }
 
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function getRiskScore(probability: number, odds: number) {
+  let risk = 0.5;
+
+  if (probability >= 0.7) risk -= 0.18;
+  else if (probability >= 0.55) risk -= 0.05;
+  else if (probability < 0.4) risk += 0.2;
+
+  if (odds >= 3) risk += 0.2;
+  else if (odds >= 2) risk += 0.08;
+  else if (odds <= 1.4) risk -= 0.08;
+
+  return clamp(risk, 0, 1);
+}
+
+function buildModelProbability(args: {
+  probability: number;
+  odds: number;
+  label: string;
+  sport: string;
+  event: DailyEventRow;
+}) {
+  const { probability, odds, label, sport, event } = args;
+
+  let model = probability;
+  const reasons: string[] = [];
+  let confidence = 0.55;
+
+  const normalizedLabel = (label || "").toLowerCase();
+
+  if (sport === "soccer") {
+    if (normalizedLabel.includes(event.home_team.toLowerCase())) {
+      model += 0.03;
+      reasons.push("ligera ventaja al equipo local");
+      confidence += 0.08;
+    }
+
+    if (normalizedLabel === "draw" || normalizedLabel === "empate") {
+      model -= 0.03;
+      reasons.push("el empate suele ser menos estable");
+      confidence -= 0.04;
+    }
+
+    if (odds <= 1.55) {
+      model += 0.02;
+      reasons.push("favorito claro");
+      confidence += 0.06;
+    }
+
+    if (odds >= 3.0) {
+      model -= 0.03;
+      reasons.push("cuota alta implica mayor riesgo");
+      confidence -= 0.06;
+    }
+  }
+
+  if (sport === "tennis") {
+    if (odds <= 1.5) {
+      model += 0.03;
+      reasons.push("favorito fuerte en tenis");
+      confidence += 0.08;
+    }
+
+    if (odds >= 2.5) {
+      model -= 0.03;
+      reasons.push("pick agresivo en tenis");
+      confidence -= 0.05;
+    }
+  }
+
+  model = clamp(model, 0.02, 0.95);
+  confidence = clamp(confidence, 0, 1);
+
+  return {
+    modelProbability: model,
+    confidenceScore: confidence,
+    reasonText: reasons.length > 0 ? reasons.join(", ") : "selección estándar del sistema",
+  };
+}
+
 export async function GET() {
   const oddsApiKey = process.env.ODDS_API_KEY;
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -97,7 +188,7 @@ export async function GET() {
   try {
     const { data: dailyEvents, error: eventsErr } = await supabase
       .from("daily_events")
-      .select("id, provider_event_id, sport, league, home_team, away_team, start_time")
+      .select("id, provider_event_id, provider_sport_key, sport, league, home_team, away_team, start_time")
       .order("start_time", { ascending: true });
 
     if (eventsErr) {
@@ -140,9 +231,7 @@ export async function GET() {
     const offersToInsert: OfferInsert[] = [];
 
     for (const event of events) {
-      const oddsEvent = oddsEvents.find(function (oe) {
-        return oe.id === event.provider_event_id;
-      });
+      const oddsEvent = oddsEvents.find((oe) => oe.id === event.provider_event_id);
 
       if (!oddsEvent || !oddsEvent.bookmakers || oddsEvent.bookmakers.length === 0) {
         continue;
@@ -150,13 +239,16 @@ export async function GET() {
 
       const bestByOutcome: Record<
         string,
-        { label: string; odds: number; probability: number; bookmaker: string }
+        {
+          label: string;
+          odds: number;
+          probability: number;
+          bookmaker: string;
+        }
       > = {};
 
       for (const bookmaker of oddsEvent.bookmakers) {
-        const h2hMarket = bookmaker.markets?.find(function (m) {
-          return m.key === "h2h";
-        });
+        const h2hMarket = bookmaker.markets?.find((m) => m.key === "h2h");
 
         if (!h2hMarket || !h2hMarket.outcomes || h2hMarket.outcomes.length < 2) {
           continue;
@@ -178,27 +270,59 @@ export async function GET() {
         }
       }
 
-      const ranked = Object.values(bestByOutcome).sort(function (a, b) {
-        return b.probability - a.probability;
+      const enriched = Object.values(bestByOutcome).map((pick) => {
+        const marketProbability = pick.probability;
+
+        const modelData = buildModelProbability({
+          probability: marketProbability,
+          odds: pick.odds,
+          label: pick.label,
+          sport: event.sport,
+          event,
+        });
+
+        const edge = modelData.modelProbability - marketProbability;
+        const riskScore = getRiskScore(modelData.modelProbability, pick.odds);
+
+        const finalScore =
+          edge * 100 +
+          modelData.confidenceScore * 10 -
+          riskScore * 8;
+
+        return {
+          ...pick,
+          marketProbability,
+          modelProbability: modelData.modelProbability,
+          edge,
+          riskScore,
+          confidenceScore: modelData.confidenceScore,
+          finalScore,
+          reasonText: modelData.reasonText,
+        };
       });
 
-      if (ranked.length < 2) {
-        continue;
-      }
+      const ranked = enriched.sort((a, b) => b.finalScore - a.finalScore);
+
+      if (ranked.length < 2) continue;
 
       const colors: Array<"green" | "orange" | "red"> = ["green", "orange", "red"];
 
-      ranked.slice(0, 3).forEach(function (pick, index) {
-        if (!colors[index]) return;
-
+      ranked.slice(0, 3).forEach((pick, index) => {
         offersToInsert.push({
           event_id: event.id,
           color: colors[index],
           market_key: "h2h",
           label: pick.label,
           odds: pick.odds,
-          probability: pick.probability,
+          probability: pick.modelProbability,
           bookmaker: pick.bookmaker,
+          market_probability: pick.marketProbability,
+          model_probability: pick.modelProbability,
+          edge: pick.edge,
+          risk_score: pick.riskScore,
+          confidence_score: pick.confidenceScore,
+          final_score: pick.finalScore,
+          reason_text: pick.reasonText,
         });
       });
     }
@@ -243,7 +367,6 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       inserted: offersToInsert.length,
-      eventsProcessed: events.length,
       sample: offersToInsert.slice(0, 6),
     });
   } catch (error: any) {
